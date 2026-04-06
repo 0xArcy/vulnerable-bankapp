@@ -125,8 +125,24 @@ $SchemaFile = Join-Path $ScriptDir "schema.sql"
 if (Test-Path $SchemaFile) {
     # Try to execute using sqlcmd
     try {
-        $CmdPath = "C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\sqlcmd.exe"
-        if (Test-Path $CmdPath) {
+        $CmdPath = $null
+        if (Get-Command sqlcmd -ErrorAction SilentlyContinue) {
+            $CmdPath = (Get-Command sqlcmd).Source
+        } else {
+            $KnownSqlCmdPaths = @(
+                "C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\sqlcmd.exe",
+                "C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\180\Tools\Binn\sqlcmd.exe",
+                "C:\Program Files\Microsoft SQL Server\110\Tools\Binn\sqlcmd.exe"
+            )
+            foreach ($path in $KnownSqlCmdPaths) {
+                if (Test-Path $path) {
+                    $CmdPath = $path
+                    break
+                }
+            }
+        }
+
+        if ($CmdPath) {
             & $CmdPath -S "localhost\SQLEXPRESS" -i $SchemaFile -o "$LogFile.schema"
             Write-Log "Schema deployed successfully" -Type "SUCCESS"
         } else {
@@ -364,7 +380,7 @@ Write-Host "  Database Setup Complete!" -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Windows VM Information:" -ForegroundColor Cyan
-Write-Host "  Hostname: $env:COMPUTERNAME" -Foreg roundColor Yellow
+Write-Host "  Hostname: $env:COMPUTERNAME" -ForegroundColor Yellow
 Write-Host "  Backend IP: $BackendIP" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "SQL Server:" -ForegroundColor Cyan

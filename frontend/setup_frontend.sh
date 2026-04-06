@@ -41,10 +41,16 @@ success() {
     echo -e "${GREEN}[SUCCESS]${NC} $1" | tee -a "$LOG_FILE"
 }
 
+warn() {
+    echo -e "${YELLOW}[WARNING]${NC} $1" | tee -a "$LOG_FILE"
+}
+
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
     error "This script must be run as root (use sudo)"
 fi
+
+trap 'error "Setup failed at line $LINENO while running: $BASH_COMMAND"' ERR
 
 log "Starting Modern Bank Frontend Setup..."
 log "Backend IP: $BACKEND_IP"
@@ -74,9 +80,15 @@ apt-get install -y -qq \
 # 2. Enable Apache2 modules
 # ============================================================================
 log "Configuring Apache2 modules..."
-a2enmod php8.1 2>/dev/null || a2enmod php8.0 2>/dev/null || a2enmod php 2>/dev/null
-a2enmod rewrite
-a2enmod headers
+PHP_APACHE_MOD="$(find /etc/apache2/mods-available -maxdepth 1 -type f -name 'php*.load' -printf '%f\n' 2>/dev/null | sed 's/\.load$//' | sort -Vr | head -n1)"
+if [[ -n "$PHP_APACHE_MOD" ]]; then
+    a2enmod "$PHP_APACHE_MOD" >/dev/null
+    log "Enabled Apache PHP module: $PHP_APACHE_MOD"
+else
+    warn "No php*.load Apache module found. Continuing with installed defaults."
+fi
+a2enmod rewrite >/dev/null
+a2enmod headers >/dev/null
 systemctl restart apache2
 
 # ============================================================================
@@ -87,7 +99,7 @@ rm -rf "$APP_DIR"/*
 
 # Copy app files
 if [ -d "$SCRIPT_DIR/www" ]; then
-    cp -r "$SCRIPT_DIR/www"/* "$APP_DIR/"
+    cp -a "$SCRIPT_DIR/www/." "$APP_DIR/"
 else
     error "Application files not found in $SCRIPT_DIR/www"
 fi
@@ -141,25 +153,28 @@ Database Credentials:
 Note: These credentials should be in a vault, but are exposed here for lab purposes.
 EOF
 
-chmod 644 "$APP_DIR/../credentials.txt"
+chmod 644 "$APP_DIR/credentials.txt"
 
 # ============================================================================
 # 6. Configure PHP
 # ============================================================================
 log "Configuring PHP settings..."
-PHP_CONFIG="/etc/php/8.1/apache2/php.ini"
-PHP_CONFIG_ALT="/etc/php/8.0/apache2/php.ini"
-
-for PHP_CONF in "$PHP_CONFIG" "$PHP_CONFIG_ALT"; do
+PHP_INI_UPDATED=false
+for PHP_CONF in /etc/php/*/apache2/php.ini; do
     if [ -f "$PHP_CONF" ]; then
         # Allow large file uploads (CTF requirement)
         sed -i 's/^upload_max_filesize.*/upload_max_filesize = 50M/' "$PHP_CONF"
         sed -i 's/^post_max_size.*/post_max_size = 50M/' "$PHP_CONF"
         # Enable error reporting for debugging
         sed -i 's/^display_errors.*/display_errors = On/' "$PHP_CONF"
-        break
+        log "Updated PHP config: $PHP_CONF"
+        PHP_INI_UPDATED=true
     fi
 done
+
+if [[ "$PHP_INI_UPDATED" == false ]]; then
+    warn "No Apache PHP ini file found under /etc/php/*/apache2/php.ini"
+fi
 
 # ============================================================================
 # 7. Set correct ownership and permissions
@@ -198,8 +213,7 @@ cat > /etc/apache2/sites-available/000-default.conf << 'EOF'
 </VirtualHost>
 EOF
 
-a2ensite 000-default 2>/dev/null
-a2dissite 000-default.conf 2>/dev/null || true
+a2ensite 000-default.conf 2>/dev/null || true
 systemctl reload apache2
 
 # ============================================================================

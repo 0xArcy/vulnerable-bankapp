@@ -26,7 +26,7 @@ REM ============================================================================
 REM Check for Administrator privileges
 REM ============================================================================
 >nul 2>&1 "%SYSTEMROOT%\system32\cacls.exe" "%SYSTEMROOT%\system32\config\system"
-if NOT errorlevel 0 (
+if errorlevel 1 (
     echo [ERROR] This script requires Administrator privileges
     echo Please run Command Prompt as Administrator
     pause
@@ -120,7 +120,7 @@ echo.
 echo Creating scheduled task for demo purposes...
 setlocal
 set "TASK_NAME=ModernBankAdminTask"
-tasklist /fi "TASKNAME eq %TASK_NAME%" 2>nul | find /i /n "%TASK_NAME%">nul
+schtasks /query /tn "%TASK_NAME%" >nul 2>&1
 if not errorlevel 1 (
     echo [OK] Task already exists
 ) else (
@@ -192,7 +192,11 @@ echo Enabling required services...
 
 REM Ensure SQL Server is running
 net start MSSQL$SQLEXPRESS >nul 2>&1
-echo [OK] SQL Server service started
+if errorlevel 1 (
+    echo [WARNING] SQL Server service could not be started (service may not exist)
+) else (
+    echo [OK] SQL Server service started
+)
 
 REM Ensure SSH is running (for lateral movement testing)
 if exist "%SYSTEMROOT%\System32\OpenSSH\sshd.exe" (

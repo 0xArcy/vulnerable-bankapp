@@ -41,10 +41,16 @@ success() {
     echo -e "${GREEN}[SUCCESS]${NC} $1" | tee -a "$LOG_FILE"
 }
 
+warn() {
+    echo -e "${YELLOW}[WARNING]${NC} $1" | tee -a "$LOG_FILE"
+}
+
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
     error "This script must be run as root (use sudo)"
 fi
+
+trap 'error "Setup failed at line $LINENO while running: $BASH_COMMAND"' ERR
 
 log "Starting Modern Bank Backend Setup..."
 log "Frontend IP: $FRONTEND_IP"
@@ -74,6 +80,10 @@ if ! command -v node &> /dev/null; then
     apt-get install -y -qq nodejs
 fi
 
+if ! command -v node &> /dev/null; then
+    error "Node.js installation failed. Please check network/package sources and retry."
+fi
+
 log "Node.js version: $(node --version)"
 log "NPM version: $(npm --version)"
 
@@ -85,7 +95,11 @@ mkdir -p "$API_DIR"
 cd "$API_DIR"
 
 # Copy application files
-cp "$SCRIPT_DIR/api"/* "$API_DIR/" 2>/dev/null || true
+cp -a "$SCRIPT_DIR/api/." "$API_DIR/"
+
+if [[ ! -f "$API_DIR/package.json" || ! -f "$API_DIR/server.js" ]]; then
+    error "Backend files missing after copy (required: package.json, server.js)"
+fi
 
 # ============================================================================
 # 4. Create and configure .env file
@@ -136,7 +150,8 @@ success "Configuration created (.env file vulnerable and readable)"
 # ============================================================================
 log "Installing Node.js dependencies..."
 cd "$API_DIR"
-npm install --no-save 2>&1 | tail -5
+npm install --no-save >> "$LOG_FILE" 2>&1
+tail -n 5 "$LOG_FILE" || true
 
 # ============================================================================
 # 6. Create systemd service for backend
@@ -186,8 +201,12 @@ apt-get install -y -qq php-cli php-cgi php-curl
 
 # Create CGI configuration
 mkdir -p /usr/lib/cgi-bin
-cp "$API_DIR/admin_cgi.php" /usr/lib/cgi-bin/admin.php 2>/dev/null || true
-chmod 755 /usr/lib/cgi-bin/admin.php
+if [[ -f "$API_DIR/admin_cgi.php" ]]; then
+    cp "$API_DIR/admin_cgi.php" /usr/lib/cgi-bin/admin.php
+    chmod 755 /usr/lib/cgi-bin/admin.php
+else
+    warn "admin_cgi.php not found in $API_DIR; skipping CGI endpoint deployment."
+fi
 
 # ============================================================================
 # 9. Create test credentials file (for CTF)
