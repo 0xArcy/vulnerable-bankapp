@@ -47,12 +47,12 @@ foreach ($accounts as $account) {
             </div>
         </div>
         <nav class="menu">
-            <a href="#" class="menu-link active">Overview</a>
-            <a href="#" class="menu-link">Accounts</a>
-            <a href="#" class="menu-link">Payments</a>
-            <a href="#" class="menu-link">Cards</a>
-            <a href="#" class="menu-link">Investments</a>
-            <a href="#" class="menu-link">Security</a>
+            <a href="#overview" class="menu-link active">Overview</a>
+            <a href="#accounts" class="menu-link">Accounts</a>
+            <a href="#payments" class="menu-link">Payments</a>
+            <a href="#cards" class="menu-link">Cards</a>
+            <a href="#investments" class="menu-link">Investments</a>
+            <a href="#security" class="menu-link">Security</a>
         </nav>
         <div class="sidebar-foot">
             <p>Support line</p>
@@ -90,7 +90,7 @@ foreach ($accounts as $account) {
             </div>
         </header>
 
-        <section class="kpi-grid">
+        <section class="kpi-grid section-target" id="overview">
             <article class="kpi-card">
                 <p>Total Portfolio</p>
                 <h2 class="count" data-format="currency" data-value="<?= number_format($totalBalance, 2, '.', '') ?>">$0.00</h2>
@@ -114,15 +114,17 @@ foreach ($accounts as $account) {
         </section>
 
         <section class="content-grid">
-            <article class="card chart-card">
+            <article class="card chart-card section-target" id="investments">
                 <div class="card-head">
                     <h3>Cashflow Trend</h3>
                     <p>Income vs spending over 6 months</p>
                 </div>
-                <canvas id="cashflowChart" height="170"></canvas>
+                <div class="chart-wrap">
+                    <canvas id="cashflowChart"></canvas>
+                </div>
             </article>
 
-            <article class="card accounts-card">
+            <article class="card accounts-card section-target" id="accounts">
                 <div class="card-head">
                     <h3>Accounts</h3>
                     <p>Live balances and daily movement</p>
@@ -145,7 +147,7 @@ foreach ($accounts as $account) {
                 </div>
             </article>
 
-            <article class="card transaction-card">
+            <article class="card transaction-card section-target" id="cards">
                 <div class="card-head">
                     <h3>Recent Transactions</h3>
                     <p>Latest movement across your accounts</p>
@@ -182,12 +184,12 @@ foreach ($accounts as $account) {
                 </div>
             </article>
 
-            <article class="card transfer-card">
+            <article class="card transfer-card section-target" id="payments">
                 <div class="card-head">
                     <h3>Quick Transfer</h3>
                     <p>Move money in seconds</p>
                 </div>
-                <form class="stack-form">
+                <form class="stack-form" id="quickTransferForm">
                     <label for="fromAccount">From account</label>
                     <select id="fromAccount">
                         <option>Everyday Checking (...1902)</option>
@@ -202,11 +204,12 @@ foreach ($accounts as $account) {
 
                     <label for="transferAmount">Amount</label>
                     <input id="transferAmount" type="number" step="0.01" placeholder="0.00">
-                    <button type="button">Review Transfer</button>
+                    <button type="button" id="transferReviewBtn">Review Transfer</button>
                 </form>
+                <div id="transferFeedback" class="transfer-feedback" aria-live="polite"></div>
             </article>
 
-            <article class="card profile-card">
+            <article class="card profile-card section-target" id="security">
                 <div class="card-head">
                     <h3>Profile</h3>
                     <p>Identity and personalization</p>

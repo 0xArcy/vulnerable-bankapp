@@ -1,4 +1,25 @@
 (() => {
+    const setActiveMenu = (activeLink) => {
+        document.querySelectorAll(".menu-link").forEach((link) => {
+            link.classList.toggle("active", link === activeLink);
+        });
+    };
+
+    const menuLinks = [...document.querySelectorAll('.menu-link[href^="#"]')];
+    menuLinks.forEach((link) => {
+        link.addEventListener("click", (event) => {
+            const targetId = link.getAttribute("href");
+            const target = targetId ? document.querySelector(targetId) : null;
+            if (!target) {
+                return;
+            }
+            event.preventDefault();
+            setActiveMenu(link);
+            target.scrollIntoView({ behavior: "smooth", block: "start" });
+            history.replaceState(null, "", targetId);
+        });
+    });
+
     const animateCurrency = (element) => {
         const target = Number.parseFloat(element.dataset.value || "0");
         const format = element.dataset.format || "currency";
@@ -41,6 +62,13 @@
     const chartCanvas = document.getElementById("cashflowChart");
     if (chartCanvas && window.Chart && window.bankData) {
         const { months, cashflow, spend } = window.bankData;
+        const allValues = [...cashflow, ...spend].filter((value) => Number.isFinite(value));
+        const minValue = Math.min(...allValues);
+        const maxValue = Math.max(...allValues);
+        const padding = Math.max((maxValue - minValue) * 0.2, 250);
+        const yMin = Math.max(0, Math.floor((minValue - padding) / 50) * 50);
+        const yMax = Math.ceil((maxValue + padding) / 50) * 50;
+
         new window.Chart(chartCanvas, {
             type: "line",
             data: {
@@ -53,7 +81,7 @@
                         backgroundColor: "rgba(15, 112, 216, 0.15)",
                         borderWidth: 2.6,
                         tension: 0.35,
-                        fill: true,
+                        fill: false,
                         pointRadius: 3
                     },
                     {
@@ -63,7 +91,7 @@
                         backgroundColor: "rgba(204, 139, 40, 0.12)",
                         borderWidth: 2.2,
                         tension: 0.3,
-                        fill: true,
+                        fill: false,
                         pointRadius: 2.8
                     }
                 ]
@@ -82,6 +110,8 @@
                 },
                 scales: {
                     y: {
+                        min: yMin,
+                        max: yMax,
                         ticks: {
                             callback: (value) => `$${value}`
                         },
@@ -109,6 +139,28 @@
             }
             const previewUrl = URL.createObjectURL(file);
             avatarPreview.src = previewUrl;
+        });
+    }
+
+    const transferButton = document.getElementById("transferReviewBtn");
+    const transferFeedback = document.getElementById("transferFeedback");
+    if (transferButton && transferFeedback) {
+        transferButton.addEventListener("click", () => {
+            const fromAccount = document.getElementById("fromAccount");
+            const toAccount = document.getElementById("toAccount");
+            const amountField = document.getElementById("transferAmount");
+            const amount = Number.parseFloat(amountField?.value || "");
+
+            if (!Number.isFinite(amount) || amount <= 0) {
+                transferFeedback.className = "transfer-feedback error";
+                transferFeedback.textContent = "Enter a valid transfer amount greater than 0.";
+                return;
+            }
+
+            const fromText = fromAccount?.value || "source account";
+            const toText = toAccount?.value || "destination account";
+            transferFeedback.className = "transfer-feedback ok";
+            transferFeedback.textContent = `Ready to transfer $${amount.toFixed(2)} from ${fromText} to ${toText}.`;
         });
     }
 })();

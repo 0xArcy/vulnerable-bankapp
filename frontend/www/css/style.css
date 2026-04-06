@@ -497,7 +497,17 @@ button:hover {
 }
 
 .chart-card {
-    min-height: 320px;
+    min-height: 0;
+}
+
+.chart-wrap {
+    position: relative;
+    height: clamp(220px, 32vh, 320px);
+}
+
+.chart-wrap canvas {
+    width: 100% !important;
+    height: 100% !important;
 }
 
 .accounts-card .account-list {
@@ -581,6 +591,23 @@ thead th {
     align-self: start;
 }
 
+.transfer-feedback {
+    margin-top: 0.75rem;
+    font-size: 0.86rem;
+    min-height: 1.3rem;
+    color: #2e4d74;
+}
+
+.transfer-feedback.ok {
+    color: #17745f;
+    font-weight: 700;
+}
+
+.transfer-feedback.error {
+    color: #a53e33;
+    font-weight: 700;
+}
+
 .profile-meta {
     display: flex;
     align-items: center;
@@ -606,6 +633,10 @@ thead th {
     font-size: 0.84rem;
     color: #61718e;
     line-height: 1.4;
+}
+
+.section-target {
+    scroll-margin-top: 1rem;
 }
 
 .profile-shell {
