@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/includes/bootstrap.php';
+require_once __DIR__ . '/config.php';
 requireAuth();
 
 $user = currentUser();
@@ -9,6 +10,7 @@ $accounts = getMockAccounts();
 $transactions = getMockTransactions();
 $insights = getMockInsights();
 $flash = pullFlash();
+$backendUrl = defined('BACKEND_URL') ? BACKEND_URL : 'http://localhost:8080';
 
 $totalBalance = 0.0;
 foreach ($accounts as $account) {
@@ -31,6 +33,7 @@ foreach ($accounts as $account) {
     <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
     <script>
         window.bankData = <?= json_encode($insights, JSON_UNESCAPED_SLASHES) ?>;
+        window.backendApiBase = <?= json_encode($backendUrl, JSON_UNESCAPED_SLASHES) ?>;
     </script>
     <script defer src="/js/dashboard.js"></script>
 </head>
@@ -47,12 +50,13 @@ foreach ($accounts as $account) {
             </div>
         </div>
         <nav class="menu">
-            <a href="#overview" class="menu-link active">Overview</a>
-            <a href="#accounts" class="menu-link">Accounts</a>
-            <a href="#payments" class="menu-link">Payments</a>
-            <a href="#cards" class="menu-link">Cards</a>
-            <a href="#investments" class="menu-link">Investments</a>
-            <a href="#security" class="menu-link">Security</a>
+            <a href="/dashboard.php#overview" class="menu-link active">Overview</a>
+            <a href="/dashboard.php#accounts" class="menu-link">Accounts</a>
+            <a href="/dashboard.php#payments" class="menu-link">Payments</a>
+            <a href="/dashboard.php#cards" class="menu-link">Cards</a>
+            <a href="/dashboard.php#investments" class="menu-link">Investments</a>
+            <a href="/dashboard.php#security" class="menu-link">Security</a>
+            <a href="/profile.php" class="menu-link">Profile</a>
         </nav>
         <div class="sidebar-foot">
             <p>Support line</p>
@@ -77,14 +81,18 @@ foreach ($accounts as $account) {
                     <span class="brand-chip" data-brand-date>---</span>
                     <span class="brand-chip gold" data-brand-time>--:--</span>
                     <span class="brand-chip">Region: CA-ON East</span>
+                    <span class="brand-chip" id="backendStatusChip">Backend: Checking</span>
+                    <span class="brand-chip" id="dbStatusChip">Database: Checking</span>
                 </div>
             </div>
             <div class="topbar-user">
-                <img src="<?= htmlspecialchars((string)$user['avatar'], ENT_QUOTES) ?>" alt="Profile avatar" class="avatar-large">
-                <div>
-                    <strong><?= htmlspecialchars((string)$user['name'], ENT_QUOTES) ?></strong>
-                    <span><?= htmlspecialchars((string)$user['tier'], ENT_QUOTES) ?> Member</span>
-                </div>
+                <a href="/profile.php" class="profile-launch" title="Open Profile Center">
+                    <img src="<?= htmlspecialchars((string)$user['avatar'], ENT_QUOTES) ?>" alt="Profile avatar" class="avatar-large">
+                    <div>
+                        <strong><?= htmlspecialchars((string)$user['name'], ENT_QUOTES) ?></strong>
+                        <span><?= htmlspecialchars((string)$user['tier'], ENT_QUOTES) ?> Member</span>
+                    </div>
+                </a>
                 <span class="primary-pill"><span class="dot"></span>Trusted Session</span>
                 <a href="/logout.php" class="ghost-btn">Sign Out</a>
             </div>

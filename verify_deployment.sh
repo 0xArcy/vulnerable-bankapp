@@ -103,6 +103,13 @@ else
     fail "API config endpoint NOT exposing credentials properly"
 fi
 
+# Check backend to database connectivity check
+if curl -s "http://$BACKEND_IP:8080/api/db-status" | grep -q "\"database_reachable\":true"; then
+    pass "Backend reports database port is reachable"
+else
+    warn "Backend db-status endpoint says database is unreachable (or endpoint unavailable)"
+fi
+
 # Check admin endpoint
 if curl -s "http://$BACKEND_IP:8080/cgi-bin/admin.php?action=info" | grep -q "windows"; then
     pass "Admin CGI endpoint is responding (vulnerability confirmed)"

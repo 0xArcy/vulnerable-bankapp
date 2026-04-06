@@ -135,6 +135,18 @@
     background: #fff7e9;
 }
 
+.brand-chip.ok {
+    border-color: #b8e4d8;
+    background: #ebf9f4;
+    color: #1a7a62;
+}
+
+.brand-chip.error {
+    border-color: #f0c8c1;
+    background: #fdecea;
+    color: #9c3b30;
+}
+
 .kpi-card {
     position: relative;
     overflow: hidden;

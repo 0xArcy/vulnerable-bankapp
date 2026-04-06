@@ -15,6 +15,7 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 const axios = require('axios');
 const os = require('os');
+const net = require('net');
 const { execSync, spawn } = require('child_process');
 require('dotenv').config();
 
@@ -36,6 +37,28 @@ const WINDOWS_CREDS = {
 
 // Store for tracking requests (logging)
 let requestLog = [];
+
+function checkTcpPort(host, port, timeoutMs = 2000) {
+    return new Promise((resolve) => {
+        const socket = new net.Socket();
+        let settled = false;
+
+        const done = (result) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            socket.destroy();
+            resolve(result);
+        };
+
+        socket.setTimeout(timeoutMs);
+        socket.once('connect', () => done(true));
+        socket.once('timeout', () => done(false));
+        socket.once('error', () => done(false));
+        socket.connect(port, host);
+    });
+}
 
 // ============================================================================
 // VULNERABLE ENDPOINT 1: SSRF via Proxy/Fetch
@@ -251,6 +274,20 @@ app.get('/api/health', (req, res) => {
     res.json({ 
         status: 'ok',
         timestamp: new Date().toISOString()
+    });
+});
+
+app.get('/api/db-status', async (req, res) => {
+    const host = WINDOWS_CREDS.host;
+    const port = Number.parseInt(process.env.DB_PORT || WINDOWS_CREDS.port, 10) || 1433;
+    const reachable = await checkTcpPort(host, port, 2500);
+
+    res.json({
+        backend_status: 'ok',
+        database_host: host,
+        database_port: port,
+        database_reachable: reachable,
+        checked_at: new Date().toISOString()
     });
 });
 

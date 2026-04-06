@@ -406,6 +406,19 @@ button:hover {
     font-size: 0.82rem;
 }
 
+.profile-launch {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    color: inherit;
+    padding-right: 0.25rem;
+    border-right: 1px solid #dfe8f5;
+}
+
+.profile-launch:hover {
+    opacity: 0.92;
+}
+
 .avatar-large {
     width: 43px;
     height: 43px;

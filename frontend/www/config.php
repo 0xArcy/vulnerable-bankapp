@@ -4,15 +4,41 @@
  * DELIBERATELY VULNERABLE: Exposed credentials (for CTF purposes)
  */
 
+function envOrDotEnv($key, $default = null) {
+    $value = getenv($key);
+    if ($value !== false && $value !== '') {
+        return $value;
+    }
+
+    static $dotEnvCache = null;
+    if ($dotEnvCache === null) {
+        $dotEnvCache = array();
+        $envPath = __DIR__ . '/.env';
+        if (is_readable($envPath)) {
+            $lines = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if ($line === '' || strpos($line, '#') === 0 || strpos($line, '=') === false) {
+                    continue;
+                }
+                list($k, $v) = array_map('trim', explode('=', $line, 2));
+                $dotEnvCache[$k] = $v;
+            }
+        }
+    }
+
+    return $dotEnvCache[$key] ?? $default;
+}
+
 // Database configuration
 define('DB_TYPE', 'MySQL');
-define('DB_HOST', getenv('BACKEND_IP') ?: 'localhost');
+define('DB_HOST', envOrDotEnv('BACKEND_IP', 'localhost'));
 define('DB_PORT', 3306);
 define('DB_USER', 'bankapp');
 define('DB_PASS', 'BankApp@2024!Insecure');
 
 // Backend API configuration
-define('BACKEND_URL', 'http://' . (getenv('BACKEND_IP') ?: 'localhost') . ':8080');
+define('BACKEND_URL', 'http://' . envOrDotEnv('BACKEND_IP', 'localhost') . ':8080');
 define('BACKEND_API_KEY', 'super_secret_api_key_12345');
 
 // Session configuration

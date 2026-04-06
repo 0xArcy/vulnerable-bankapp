@@ -1,24 +1,43 @@
 (() => {
-    const setActiveMenu = (activeLink) => {
-        document.querySelectorAll(".menu-link").forEach((link) => {
-            link.classList.toggle("active", link === activeLink);
+    const menuLinks = [...document.querySelectorAll(".menu-link")];
+    const extractHash = (href) => {
+        if (!href || !href.includes("#")) {
+            return "";
+        }
+        return href.slice(href.indexOf("#"));
+    };
+
+    const updateMenuByHash = () => {
+        const currentHash = window.location.hash || "#overview";
+        menuLinks.forEach((link) => {
+            const linkHash = extractHash(link.getAttribute("href") || "");
+            if (!linkHash) {
+                return;
+            }
+            link.classList.toggle("active", linkHash === currentHash);
         });
     };
 
-    const menuLinks = [...document.querySelectorAll('.menu-link[href^="#"]')];
     menuLinks.forEach((link) => {
+        const href = link.getAttribute("href") || "";
+        const hash = extractHash(href);
+        if (!hash) {
+            return;
+        }
         link.addEventListener("click", (event) => {
-            const targetId = link.getAttribute("href");
-            const target = targetId ? document.querySelector(targetId) : null;
+            const target = document.querySelector(hash);
             if (!target) {
                 return;
             }
             event.preventDefault();
-            setActiveMenu(link);
             target.scrollIntoView({ behavior: "smooth", block: "start" });
-            history.replaceState(null, "", targetId);
+            history.replaceState(null, "", hash);
+            updateMenuByHash();
         });
     });
+
+    updateMenuByHash();
+    window.addEventListener("hashchange", updateMenuByHash);
 
     const animateCurrency = (element) => {
         const target = Number.parseFloat(element.dataset.value || "0");
@@ -162,5 +181,50 @@
             transferFeedback.className = "transfer-feedback ok";
             transferFeedback.textContent = `Ready to transfer $${amount.toFixed(2)} from ${fromText} to ${toText}.`;
         });
+    }
+
+    const backendStatusChip = document.getElementById("backendStatusChip");
+    const dbStatusChip = document.getElementById("dbStatusChip");
+    const backendBase = window.backendApiBase || "";
+    const setChip = (element, text, stateClass) => {
+        if (!element) {
+            return;
+        }
+        element.textContent = text;
+        element.classList.remove("ok", "error");
+        if (stateClass) {
+            element.classList.add(stateClass);
+        }
+    };
+
+    if (backendBase) {
+        fetch(`${backendBase}/api/health`, { method: "GET" })
+            .then((response) => response.json())
+            .then((data) => {
+                if (data && data.status === "ok") {
+                    setChip(backendStatusChip, "Backend: Online", "ok");
+                } else {
+                    setChip(backendStatusChip, "Backend: Unhealthy", "error");
+                }
+            })
+            .catch(() => {
+                setChip(backendStatusChip, "Backend: Offline", "error");
+            });
+
+        fetch(`${backendBase}/api/db-status`, { method: "GET" })
+            .then((response) => response.json())
+            .then((data) => {
+                if (data && data.database_reachable) {
+                    setChip(dbStatusChip, "Database: Reachable", "ok");
+                } else {
+                    setChip(dbStatusChip, "Database: Unreachable", "error");
+                }
+            })
+            .catch(() => {
+                setChip(dbStatusChip, "Database: Unknown", "error");
+            });
+    } else {
+        setChip(backendStatusChip, "Backend: Not Configured", "error");
+        setChip(dbStatusChip, "Database: Not Configured", "error");
     }
 })();
