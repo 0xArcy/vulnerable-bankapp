@@ -31,6 +31,21 @@ function Get-MongoServerPath {
     return $null
 }
 
+function Get-MongoShellPath {
+  $command = Get-Command mongosh -ErrorAction SilentlyContinue
+  if ($command -and $command.Source -and (Test-Path $command.Source)) {
+    return $command.Source
+  }
+
+  $candidates = @(
+    (Join-Path $MongoBinPath "mongosh.exe"),
+    "C:\Program Files\MongoDB\mongosh\bin\mongosh.exe",
+    (Join-Path $MongoBinPath "mongo.exe")
+  )
+
+  return $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+
 $MongoPath = Get-MongoServerPath
 
 if (-not $MongoPath) {
@@ -54,16 +69,23 @@ $MongoDataPath = Join-Path $MongoPath "data"
 New-Item -ItemType Directory -Force -Path $MongoLogPath | Out-Null
 New-Item -ItemType Directory -Force -Path $MongoDataPath | Out-Null
 
-$MongoShellCandidates = @(
-    (Join-Path $MongoBinPath "mongosh.exe"),
-    "C:\Program Files\MongoDB\mongosh\bin\mongosh.exe",
-    (Join-Path $MongoBinPath "mongo.exe")
-)
-
-$MongoClient = $MongoShellCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+$MongoClient = Get-MongoShellPath
 
 if (-not $MongoClient) {
-    throw "Could not find mongosh.exe or mongo.exe. Install MongoDB Shell or reinstall MongoDB Community Server with shell support."
+  Write-Host "MongoDB server is installed, but MongoDB Shell is missing. Attempting to install mongosh..."
+
+  if (Get-Command winget -ErrorAction SilentlyContinue) {
+    Start-Process winget -Wait -ArgumentList "install", "--id", "MongoDB.Shell", "-e", "--accept-source-agreements", "--accept-package-agreements"
+  } else {
+    Write-Warning "winget is not available. Install MongoDB Shell manually from https://www.mongodb.com/try/download/shell"
+  }
+
+  $env:Path += ";C:\Program Files\MongoDB\mongosh\bin"
+  $MongoClient = Get-MongoShellPath
+
+  if (-not $MongoClient) {
+    throw "Could not find mongosh.exe or mongo.exe after attempting shell install. Install MongoDB Shell, then rerun setup_mongo.ps1."
+  }
 }
 
 $ConfigCdata = @"
