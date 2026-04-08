@@ -93,7 +93,14 @@ if (-not $MongoClient) {
   }
 }
 
-$ConfigCdata = @"
+function Write-MongoConfig {
+  param(
+    [bool]$AuthEnabled = $true
+  )
+
+  $authLine = if ($AuthEnabled) { "  authorization: enabled" } else { "  authorization: disabled" }
+
+  $cfg = @"
 systemLog:
   destination: file
   path: $MongoLogPath\mongod.log
@@ -104,9 +111,12 @@ net:
   port: 27017
   bindIp: 0.0.0.0
 security:
-  authorization: enabled
+$authLine
 "@
-$ConfigCdata | Out-File -FilePath $MongoCfgPath -Encoding ASCII -Force
+  $cfg | Out-File -FilePath $MongoCfgPath -Encoding ASCII -Force
+}
+
+Write-MongoConfig -AuthEnabled $true
 
 function New-RandomSecret {
   param(
@@ -214,20 +224,39 @@ if (Get-Service -Name "MongoDB" -ErrorAction SilentlyContinue) {
     Start-Service -Name "MongoDB"
 }
 
-Write-Host "Creating app user... Please give it 10 seconds..."
+Write-Host "Waiting for MongoDB to be ready..."
 Start-Sleep -Seconds 10
 
 $AdminCredentials = Get-AdminCredentials
 
 if (-not (Test-AdminCredentials -Credentials $AdminCredentials)) {
-  Write-Host "Bootstrapping MongoDB admin account..."
+  Write-Host "Saved admin credentials did not work. Temporarily disabling auth to reset users..."
 
+  Write-MongoConfig -AuthEnabled $false
+  Restart-Service -Name "MongoDB" -Force
+  Start-Sleep -Seconds 8
+
+  Write-Host "Creating admin user without auth..."
   try {
     Initialize-AdminUser -Credentials $AdminCredentials
+    Write-Host "Admin user created successfully."
   } catch {
-    throw "Unable to create or authenticate the MongoDB admin user. If this host has stale MongoDB users from an earlier install, clear the demo data or provide the existing admin credentials and rerun the script. Original error: $($_.Exception.Message)"
+    throw "Failed to create admin user even with auth disabled. Original error: $($_.Exception.Message)"
   }
+
+  Write-Host "Re-enabling auth and restarting MongoDB..."
+  Write-MongoConfig -AuthEnabled $true
+  Restart-Service -Name "MongoDB" -Force
+  Start-Sleep -Seconds 8
+
+  if (-not (Test-AdminCredentials -Credentials $AdminCredentials)) {
+    throw "Admin credentials still do not work after reset. Something is wrong with the MongoDB data directory."
+  }
+
+  Write-Host "Admin credentials verified after auth re-enable."
 }
+
+Write-Host "Creating application user '$DbUser' on database '$DbName'..."
 
 $MongoEval = @"
 db = db.getSiblingDB('admin');
