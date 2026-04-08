@@ -1,362 +1,419 @@
 #!/usr/bin/env node
-/**
- * Modern Bank - Backend API Server
- * Deliberately vulnerable Node.js Express API
- * 
- * Vulnerabilities:
- * - SSRF via fetch endpoint
- * - Hardcoded Windows credentials
- * - Unauthenticated admin endpoints
- * - Command injection in callback parameters
- */
+'use strict';
 
+const fs = require('fs');
+const https = require('https');
+const crypto = require('crypto');
 const express = require('express');
-const bodyParser = require('body-parser');
 const cors = require('cors');
-const axios = require('axios');
-const os = require('os');
-const net = require('net');
-const { execSync, spawn } = require('child_process');
+const helmet = require('helmet');
+const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
 require('dotenv').config();
 
-const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = Number.parseInt(process.env.PORT || '8443', 10);
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/modernbank';
+const MONGO_USE_TLS = (process.env.MONGO_USE_TLS || 'false') === 'true';
+const JWT_SECRET = process.env.JWT_SECRET || 'replace-me-with-strong-secret';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '30m';
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || 'replace-me-internal-token';
+const TOKENIZATION_KEY = process.env.TOKENIZATION_KEY || 'replace-me-tokenization-key';
+const TLS_CERT_PATH = process.env.TLS_CERT_PATH || '/opt/modernbank-backend/certs/backend.crt';
+const TLS_KEY_PATH = process.env.TLS_KEY_PATH || '/opt/modernbank-backend/certs/backend.key';
+const MONGO_TLS_CA_FILE = process.env.MONGO_TLS_CA_FILE || '';
+const MONGO_TLS_ALLOW_INVALID_CERTS = (process.env.MONGO_TLS_ALLOW_INVALID_CERTS || 'true') === 'true';
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'https://10.0.10.105';
 
-// Middleware
-app.use(bodyParser.json());
-app.use(cors());
+const DEMO_USERNAME = process.env.DEMO_USERNAME || 'julia.ross';
+const DEMO_PASSWORD = process.env.DEMO_PASSWORD || 'BankDemo!2026';
+const DEMO_USER_ID = process.env.DEMO_USER_ID || '1001';
 
-// VULNERABILITY: Hardcoded credentials for Windows Database Server
-const WINDOWS_CREDS = {
-    host: process.env.WINDOWS_HOST || '192.168.1.50',
-    username: 'Administrator',
-    password: 'ModernBank@2024!Admin',  // EXPOSED IN ENV
-    database: 'ModernBank',
-    port: 1433
-};
-
-// Store for tracking requests (logging)
-let requestLog = [];
-
-function checkTcpPort(host, port, timeoutMs = 2000) {
-    return new Promise((resolve) => {
-        const socket = new net.Socket();
-        let settled = false;
-
-        const done = (result) => {
-            if (settled) {
-                return;
-            }
-            settled = true;
-            socket.destroy();
-            resolve(result);
-        };
-
-        socket.setTimeout(timeoutMs);
-        socket.once('connect', () => done(true));
-        socket.once('timeout', () => done(false));
-        socket.once('error', () => done(false));
-        socket.connect(port, host);
-    });
+function parseNumber(value, fallback) {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isNaN(parsed)) {
+        return fallback;
+    }
+    return parsed;
 }
 
-// ============================================================================
-// VULNERABLE ENDPOINT 1: SSRF via Proxy/Fetch
-// ============================================================================
-app.post('/api/proxy', (req, res) => {
-    /**
-     * VULNERABILITY: Server-Side Request Forgery (SSRF)
-     * Allows attacker to make requests to internal systems
-     * 
-     * Attack: POST /api/proxy
-     * Body: {"url": "file:///etc/passwd"}
-     *       or {"url": "http://192.168.1.50:1433"}
-     */
-    const { url, method = 'GET' } = req.body;
-    
-    if (!url) {
-        return res.status(400).json({ error: 'URL parameter required' });
+function timingSafeEquals(left, right) {
+    if (typeof left !== 'string' || typeof right !== 'string') {
+        return false;
     }
 
-    // VULNERABILITY: No URL validation - allows file://, gopher://, etc.
-    axios({
-        method: method,
-        url: url,
-        timeout: 5000,
-        maxRedirects: 5,
-        validateStatus: () => true  // Accept any status code
+    const leftBuffer = Buffer.from(left, 'utf8');
+    const rightBuffer = Buffer.from(right, 'utf8');
+
+    if (leftBuffer.length !== rightBuffer.length) {
+        return false;
+    }
+
+    return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function buildTokenizationKey(rawValue) {
+    if (/^[a-fA-F0-9]{64}$/.test(rawValue)) {
+        return Buffer.from(rawValue, 'hex');
+    }
+
+    return crypto.createHash('sha256').update(rawValue, 'utf8').digest();
+}
+
+const tokenizationKey = buildTokenizationKey(TOKENIZATION_KEY);
+
+function tokenizeValue(input) {
+    const source = String(input || '').trim();
+    if (source === '') {
+        return '';
+    }
+
+    const digest = crypto
+        .createHmac('sha256', tokenizationKey)
+        .update(source, 'utf8')
+        .digest('hex');
+
+    return `tok_${digest}`;
+}
+
+const securityEventSchema = new mongoose.Schema(
+    {
+        eventType: { type: String, required: true, trim: true },
+        actorToken: { type: String, default: '' },
+        sourceIpToken: { type: String, default: '' },
+        userAgentToken: { type: String, default: '' },
+        outcome: { type: String, default: 'unknown' },
+        createdAt: { type: Date, default: Date.now },
+    },
+    {
+        collection: 'security_events',
+        versionKey: false,
+    }
+);
+
+const secureRecordSchema = new mongoose.Schema(
+    {
+        userId: { type: String, required: true, index: true },
+        label: { type: String, required: true, trim: true, maxlength: 120 },
+        accountToken: { type: String, required: true, index: true },
+        accountLast4: { type: String, required: true, minlength: 4, maxlength: 4 },
+        noteToken: { type: String, default: '' },
+        createdAt: { type: Date, default: Date.now },
+    },
+    {
+        collection: 'secure_records',
+        versionKey: false,
+    }
+);
+
+const SecurityEvent = mongoose.model('SecurityEvent', securityEventSchema);
+const SecureRecord = mongoose.model('SecureRecord', secureRecordSchema);
+
+const app = express();
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
+
+const allowedOrigins = [
+    FRONTEND_ORIGIN,
+    'https://10.0.10.105',
+    'https://localhost',
+    'https://127.0.0.1',
+];
+
+app.use(
+    helmet({
+        contentSecurityPolicy: false,
+        crossOriginEmbedderPolicy: false,
     })
-    .then(response => {
-        res.json({
-            status: response.status,
-            headers: response.headers,
-            data: response.data.toString().substring(0, 5000)  // Limit response
-        });
-    })
-    .catch(error => {
-        res.status(500).json({
-            error: error.message,
-            details: error.response?.data || null
-        });
-    });
-});
+);
 
-// ============================================================================
-// VULNERABLE ENDPOINT 2: Unauthenticated Admin Endpoint
-// ============================================================================
-app.get('/cgi-bin/admin.php', (req, res) => {
-    /**
-     * VULNERABILITY: Unauthenticated Admin Interface
-     * Allows attacker to execute commands, query database, etc.
-     * 
-     * Attack: GET /cgi-bin/admin.php?action=info
-     *         GET /cgi-bin/admin.php?action=exec&cmd=id
-     *         GET /cgi-bin/admin.php?action=db&query=SELECT...
-     */
-    const action = req.query.action || 'info';
-    
-    // VULNERABILITY: No authentication check!
-    
-    try {
-        switch(action) {
-            case 'info':
-                // System information leak
-                res.json({
-                    server: 'Modern Bank Backend',
-                    version: '1.0.0',
-                    environment: process.env.NODE_ENV || 'production',
-                    uptime: process.uptime(),
-                    hostname: os.hostname(),
-                    platform: os.platform(),
-                    windows_host: WINDOWS_CREDS.host,
-                    windows_user: WINDOWS_CREDS.username,
-                    // VULNERABILITY: Credentials exposed!
-                    database_credentials: WINDOWS_CREDS
-                });
-                break;
-
-            case 'exec':
-                // VULNERABILITY: Command Injection
-                const cmd = req.query.cmd || 'whoami';
-                try {
-                    const output = execSync(cmd, { 
-                        encoding: 'utf8',
-                        maxBuffer: 1024 * 1024 * 10
-                    });
-                    res.json({ 
-                        success: true,
-                        command: cmd,
-                        output: output
-                    });
-                } catch(e) {
-                    res.json({
-                        success: false,
-                        command: cmd,
-                        error: e.message
-                    });
-                }
-                break;
-
-            case 'files':
-                // VULNERABILITY: File listing / enumeration
-                const path = req.query.path || '/etc';
-                try {
-                    const output = execSync(`ls -la "${path}"`, {
-                        encoding: 'utf8'
-                    });
-                    res.json({
-                        success: true,
-                        path: path,
-                        files: output
-                    });
-                } catch(e) {
-                    res.json({
-                        success: false,
-                        error: e.message
-                    });
-                }
-                break;
-
-            case 'db':
-                // VULNERABILITY: Database access interface
-                const query = req.query.query || 'SELECT 1';
-                res.json({
-                    credentials: WINDOWS_CREDS,
-                    proposed_query: query,
-                    note: 'Use Windows credentials above to connect to database',
-                    connection_string: `mssql://${WINDOWS_CREDS.username}:${WINDOWS_CREDS.password}@${WINDOWS_CREDS.host}:${WINDOWS_CREDS.port}/${WINDOWS_CREDS.database}`
-                });
-                break;
-
-            default:
-                res.json({
-                    error: 'Unknown action',
-                    available_actions: ['info', 'exec', 'files', 'db']
-                });
-        }
-    } catch(error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ============================================================================
-// VULNERABLE ENDPOINT 3: Callback Injection
-// ============================================================================
-app.post('/api/callback', (req, res) => {
-    /**
-     * VULNERABILITY: Callback parameter injection leading to RCE
-     * 
-     * Attack: POST /api/callback
-     * Body: {"callback": "calcapi.execute('whoami')"}
-     */
-    const { callback, data } = req.body;
-    
-    if (!callback) {
-        return res.status(400).json({ error: 'Callback parameter required' });
-    }
-
-    try {
-        // VULNERABILITY: eval() equivalent - RCE!
-        const result = Function(`"use strict"; return (${callback})`)();
-        res.json({ result: result });
-    } catch(e) {
-        res.statusCode = 500;
-        res.json({ error: e.message });
-    }
-});
-
-// ============================================================================
-// VULNERABLE ENDPOINT 4: Exposed Config
-// ============================================================================
-app.get('/api/config', (req, res) => {
-    /**
-     * VULNERABILITY: Configuration dump
-     * Exposes all internal settings and credentials
-     */
-    res.json({
-        app_name: 'Modern Bank Backend',
-        version: '1.0.0',
-        node_env: process.env.NODE_ENV,
-        windows_credentials: WINDOWS_CREDS,
-        frontend_ip: process.env.FRONTEND_IP || 'Unknown',
-        api_key: process.env.API_KEY || 'super_secret_api_key_12345',
-        database: {
-            type: 'MSSQL',
-            host: WINDOWS_CREDS.host,
-            port: WINDOWS_CREDS.port,
-            user: WINDOWS_CREDS.username,
-            password: WINDOWS_CREDS.password
+app.use(
+    cors({
+        origin(origin, callback) {
+            if (!origin || allowedOrigins.includes(origin)) {
+                return callback(null, true);
+            }
+            return callback(new Error('Origin not allowed'));
         },
-        debug: true
-    });
-});
+        methods: ['GET', 'POST', 'PUT', 'DELETE'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'X-Internal-Token'],
+        credentials: false,
+    })
+);
 
-// ============================================================================
-// VULNERABLE ENDPOINT 5: Exposed Logs
-// ============================================================================
-app.get('/api/logs', (req, res) => {
-    /**
-     * VULNERABILITY: Unauthenticated log access
-     * Could contain sensitive information
-     */
-    const limit = parseInt(req.query.limit) || 100;
-    res.json({
-        total_requests: requestLog.length,
-        logs: requestLog.slice(-limit),
-        note: 'All internal requests logged'
-    });
-});
+app.use(express.json({ limit: '32kb' }));
 
-// ============================================================================
-// Legitimate Endpoints (for CTF setup)
-// ============================================================================
-app.get('/api/health', (req, res) => {
-    res.json({ 
-        status: 'ok',
-        timestamp: new Date().toISOString()
-    });
-});
-
-app.get('/api/db-status', async (req, res) => {
-    const host = WINDOWS_CREDS.host;
-    const port = Number.parseInt(process.env.DB_PORT || WINDOWS_CREDS.port, 10) || 1433;
-    const reachable = await checkTcpPort(host, port, 2500);
-
-    res.json({
-        backend_status: 'ok',
-        database_host: host,
-        database_port: port,
-        database_reachable: reachable,
-        checked_at: new Date().toISOString()
-    });
-});
-
-app.post('/api/authenticate', (req, res) => {
-    const { username, password } = req.body;
-    
-    // Mock authentication
-    if (username === 'admin' && password === 'admin123') {
-        res.json({
-            token: 'mock_token_' + Date.now(),
-            user: { id: 1, username: 'admin', role: 'admin' }
-        });
-    } else {
-        res.status(401).json({ error: 'Invalid credentials' });
-    }
-});
-
-// ============================================================================
-// Request logging middleware
-// ============================================================================
 app.use((req, res, next) => {
-    requestLog.push({
-        timestamp: new Date().toISOString(),
-        method: req.method,
-        path: req.path,
-        query: req.query,
-        ip: req.ip
-    });
-    
-    // Keep only last 1000 requests
-    if (requestLog.length > 1000) {
-        requestLog.shift();
-    }
-    
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     next();
 });
 
-// ============================================================================
-// Error handling
-// ============================================================================
-app.use((err, req, res, next) => {
-    console.error('Error:', err);
-    res.status(500).json({
-        error: 'Internal Server Error',
-        message: err.message
+function requireInternalToken(req, res, next) {
+    const incomingToken = req.get('x-internal-token') || '';
+
+    if (!timingSafeEquals(incomingToken, INTERNAL_API_TOKEN)) {
+        return res.status(401).json({ error: 'Missing or invalid service token.' });
+    }
+
+    return next();
+}
+
+app.use('/api', requireInternalToken);
+
+function extractBearerToken(req) {
+    const authHeader = req.get('authorization') || '';
+    if (!authHeader.startsWith('Bearer ')) {
+        return '';
+    }
+    return authHeader.slice(7).trim();
+}
+
+function requireJwt(req, res, next) {
+    const token = extractBearerToken(req);
+    if (token === '') {
+        return res.status(401).json({ error: 'Missing bearer token.' });
+    }
+
+    try {
+        const payload = jwt.verify(token, JWT_SECRET, {
+            issuer: 'modernbank-backend',
+            audience: 'modernbank-frontend',
+        });
+
+        req.auth = {
+            userId: String(payload.sub || ''),
+            username: String(payload.username || ''),
+            role: String(payload.role || 'user'),
+        };
+
+        return next();
+    } catch (error) {
+        return res.status(401).json({ error: 'Invalid or expired bearer token.' });
+    }
+}
+
+async function recordSecurityEvent(eventType, username, req, outcome) {
+    try {
+        await SecurityEvent.create({
+            eventType,
+            actorToken: tokenizeValue(username),
+            sourceIpToken: tokenizeValue(req.ip || ''),
+            userAgentToken: tokenizeValue(req.get('user-agent') || ''),
+            outcome,
+        });
+    } catch (error) {
+        // Continue request flow if event persistence fails.
+    }
+}
+
+async function loginHandler(req, res) {
+    const username = String(req.body.username || '').trim();
+    const password = String(req.body.password || '');
+
+    if (username === '' || password === '') {
+        await recordSecurityEvent('login_attempt', username, req, 'missing_fields');
+        return res.status(400).json({ error: 'Username and password are required.' });
+    }
+
+    if (username !== DEMO_USERNAME || password !== DEMO_PASSWORD) {
+        await recordSecurityEvent('login_attempt', username, req, 'invalid_credentials');
+        return res.status(401).json({ error: 'Invalid credentials.' });
+    }
+
+    const token = jwt.sign(
+        {
+            sub: DEMO_USER_ID,
+            username: DEMO_USERNAME,
+            role: 'customer',
+        },
+        JWT_SECRET,
+        {
+            expiresIn: JWT_EXPIRES_IN,
+            issuer: 'modernbank-backend',
+            audience: 'modernbank-frontend',
+        }
+    );
+
+    await recordSecurityEvent('login_attempt', username, req, 'success');
+
+    return res.json({
+        accessToken: token,
+        tokenType: 'Bearer',
+        expiresIn: JWT_EXPIRES_IN,
+        user: {
+            id: DEMO_USER_ID,
+            username: DEMO_USERNAME,
+            role: 'customer',
+            name: 'Julia Ross',
+        },
+    });
+}
+
+app.post('/api/auth/login', loginHandler);
+app.post('/api/authenticate', loginHandler);
+
+app.get('/api/auth/me', requireJwt, (req, res) => {
+    return res.json({
+        id: req.auth.userId,
+        username: req.auth.username,
+        role: req.auth.role,
+        tier: 'Platinum',
     });
 });
 
-// ============================================================================
-// Server startup
-// ============================================================================
-app.listen(PORT, () => {
-    console.log('╔══════════════════════════════════════════════════════╗');
-    console.log('║     Modern Bank - Backend API Server Started         ║');
-    console.log('╚══════════════════════════════════════════════════════╝');
-    console.log(`\nServer running on port ${PORT}`);
-    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`\nEndpoints:\n`);
-    console.log('  GET  /api/health              - Health check');
-    console.log('  GET  /api/config              - VULNERABLE: Expose config');
-    console.log('  GET  /cgi-bin/admin.php       - VULNERABLE: Admin interface');
-    console.log('  POST /api/proxy               - VULNERABLE: SSRF');
-    console.log('  POST /api/callback            - VULNERABLE: RCE via callback');
-    console.log('  GET  /api/logs                - VULNERABLE: Expose logs');
-    console.log('  POST /api/authenticate        - Mock authentication\n');
+app.get('/api/health', (req, res) => {
+    return res.json({
+        status: 'ok',
+        service: 'modernbank-backend',
+        transport: 'tls',
+        timestamp: new Date().toISOString(),
+    });
 });
 
-// Keep process running
-process.on('SIGINT', () => {
-    console.log('\n\nServer shutting down...');
-    process.exit(0);
+app.get('/api/db-status', (req, res) => {
+    const readyState = mongoose.connection.readyState;
+    const databaseReachable = readyState === 1;
+
+    return res.json({
+        backend_status: 'ok',
+        database_reachable: databaseReachable,
+        mongo_ready_state: readyState,
+        mongo_transport: MONGO_USE_TLS ? 'tls' : 'tcp',
+        checked_at: new Date().toISOString(),
+    });
 });
+
+app.get('/api/records', requireJwt, async (req, res) => {
+    const records = await SecureRecord.find({ userId: req.auth.userId })
+        .sort({ createdAt: -1 })
+        .limit(100)
+        .lean();
+
+    const response = records.map((item) => ({
+        id: String(item._id),
+        label: item.label,
+        accountLast4: item.accountLast4,
+        accountToken: item.accountToken,
+        noteToken: item.noteToken,
+        createdAt: item.createdAt,
+    }));
+
+    return res.json({ records: response });
+});
+
+app.post('/api/records', requireJwt, async (req, res) => {
+    const label = String(req.body.label || '').trim();
+    const accountNumber = String(req.body.accountNumber || '').trim();
+    const note = String(req.body.note || '').trim();
+
+    if (label.length < 3 || label.length > 120) {
+        return res.status(400).json({ error: 'Label must be between 3 and 120 characters.' });
+    }
+
+    if (accountNumber.length < 8 || accountNumber.length > 32) {
+        return res.status(400).json({ error: 'Account number must be between 8 and 32 characters.' });
+    }
+
+    if (note.length > 256) {
+        return res.status(400).json({ error: 'Note length exceeds 256 characters.' });
+    }
+
+    const accountDigits = accountNumber.replace(/\D/g, '');
+    if (accountDigits.length < 4) {
+        return res.status(400).json({ error: 'Account number is invalid.' });
+    }
+
+    const secureRecord = await SecureRecord.create({
+        userId: req.auth.userId,
+        label,
+        accountToken: tokenizeValue(accountNumber),
+        accountLast4: accountDigits.slice(-4),
+        noteToken: tokenizeValue(note),
+    });
+
+    return res.status(201).json({
+        id: String(secureRecord._id),
+        label: secureRecord.label,
+        accountLast4: secureRecord.accountLast4,
+        accountToken: secureRecord.accountToken,
+        noteToken: secureRecord.noteToken,
+        createdAt: secureRecord.createdAt,
+    });
+});
+
+app.get('/api/tokenization/example', requireJwt, (req, res) => {
+    const sample = '4111-1111-1111-1111';
+    return res.json({
+        sample,
+        tokenized: tokenizeValue(sample),
+    });
+});
+
+app.use((err, req, res, next) => {
+    if (err && err.message === 'Origin not allowed') {
+        return res.status(403).json({ error: 'Origin not allowed.' });
+    }
+
+    if (err && err.name === 'SyntaxError') {
+        return res.status(400).json({ error: 'Invalid JSON payload.' });
+    }
+
+    return res.status(500).json({ error: 'Internal server error.' });
+});
+
+async function connectMongo() {
+    const connectOptions = {
+        maxPoolSize: parseNumber(process.env.MONGO_MAX_POOL_SIZE || '10', 10),
+        serverSelectionTimeoutMS: parseNumber(
+            process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS || '8000',
+            8000
+        ),
+    };
+
+    if (MONGO_USE_TLS) {
+        connectOptions.tls = true;
+    }
+
+    if (MONGO_USE_TLS && MONGO_TLS_CA_FILE !== '') {
+        connectOptions.tlsCAFile = MONGO_TLS_CA_FILE;
+    }
+
+    if (MONGO_USE_TLS && MONGO_TLS_ALLOW_INVALID_CERTS) {
+        connectOptions.tlsAllowInvalidCertificates = true;
+    }
+
+    await mongoose.connect(MONGO_URI, connectOptions);
+}
+
+async function startServer() {
+    if (!fs.existsSync(TLS_CERT_PATH) || !fs.existsSync(TLS_KEY_PATH)) {
+        throw new Error(
+            `TLS certificate files not found. Expected cert=${TLS_CERT_PATH} key=${TLS_KEY_PATH}`
+        );
+    }
+
+    await connectMongo();
+
+    const tlsOptions = {
+        cert: fs.readFileSync(TLS_CERT_PATH),
+        key: fs.readFileSync(TLS_KEY_PATH),
+        minVersion: 'TLSv1.2',
+    };
+
+    https.createServer(tlsOptions, app).listen(PORT, () => {
+        console.log('Modern Bank secure backend started (HTTPS only).');
+        console.log(`TLS API listening on port ${PORT}`);
+    });
+}
+
+if (require.main === module) {
+    startServer().catch((error) => {
+        console.error('Backend startup failed:', error.message);
+        process.exit(1);
+    });
+}
+
+module.exports = {
+    app,
+    startServer,
+    tokenizeValue,
+};

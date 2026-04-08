@@ -1,20 +1,16 @@
 #!/bin/bash
-# Deployment Checklist for Modern Bank CTF Lab
-# Use this to verify all components are properly deployed
+# Deployment verification for encrypted Modern Bank stack
 
-echo "=================================================="
-echo "Modern Bank CTF Lab - Deployment Verification"
-echo "=================================================="
-echo ""
+set -euo pipefail
 
-FRONTEND_IP="${1:-192.168.1.10}"
-BACKEND_IP="${2:-192.168.1.100}"
-DATABASE_IP="${3:-192.168.1.50}"
+FRONTEND_IP="${1:-10.0.10.105}"
+BACKEND_IP="${2:-10.0.10.102}"
+DATABASE_IP="${3:-10.0.10.106}"
+INTERNAL_API_TOKEN="${4:-}"
 
-check_mark="✓"
-cross_mark="✗"
+check_mark="[OK]"
+cross_mark="[FAIL]"
 
-# Color codes
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
@@ -32,167 +28,131 @@ warn() {
     echo -e "${YELLOW}!${NC} $1"
 }
 
-echo "======== FRONTEND TIER ($FRONTEND_IP) ========"
+echo "=================================================="
+echo "Modern Bank Secure Stack - Deployment Verification"
+echo "=================================================="
 echo ""
 
-# Check Frontend connectivity
-if ping -c 1 "$FRONTEND_IP" &> /dev/null; then
-    pass "Frontend VM is reachable"
+echo "======== FRONTEND TLS EDGE (${FRONTEND_IP}) ========"
+
+if ping -c 1 "$FRONTEND_IP" >/dev/null 2>&1; then
+    pass "Frontend host is reachable"
 else
-    fail "Frontend VM is NOT reachable"
+    fail "Frontend host is unreachable"
     exit 1
 fi
 
-# Check Apache
-if nc -zw1 "$FRONTEND_IP" 80 &> /dev/null; then
-    pass "Apache (port 80) is listening"
+if nc -zw2 "$FRONTEND_IP" 443 >/dev/null 2>&1; then
+    pass "TLS edge port 443 is listening"
 else
-    fail "Apache (port 80) is NOT listening"
+    fail "TLS edge port 443 is not reachable"
 fi
 
-# Check web application
-if curl -s "http://$FRONTEND_IP/" | grep -q "Modern Bank"; then
-    pass "Web application is responding"
+if curl -ks --max-time 6 "https://${FRONTEND_IP}/" | grep -q "Modern Bank"; then
+    pass "Frontend UI responds over HTTPS"
 else
-    fail "Web application is NOT responding properly"
+    fail "Frontend UI does not respond correctly over HTTPS"
 fi
 
-# Check .env file
-if curl -s "http://$FRONTEND_IP/.env" | grep -q "BACKEND_IP"; then
-    pass ".env file is accessible (vulnerability confirmed)"
+if curl -sI --max-time 6 "http://${FRONTEND_IP}/" | grep -qi "301\|302"; then
+    pass "HTTP is redirected to HTTPS"
 else
-    fail ".env file is NOT accessible"
-fi
-
-# Check uploads directory
-if curl -s "http://$FRONTEND_IP/uploads/" | grep -q "Index of"; then
-    pass "Uploads directory is browsable (vulnerability confirmed)"
-else
-    warn "Uploads directory may not be browsable"
+    warn "HTTP redirect to HTTPS was not detected"
 fi
 
 echo ""
-echo "======== BACKEND TIER ($BACKEND_IP) ========"
-echo ""
+echo "======== API THROUGH GODPROXY ========"
 
-# Check Backend connectivity
-if ping -c 1 "$BACKEND_IP" &> /dev/null; then
-    pass "Backend VM is reachable"
+if curl -ks --max-time 6 "https://${FRONTEND_IP}/api/health" | grep -q '"status":"ok"'; then
+    pass "Frontend -> backend API path is healthy"
 else
-    fail "Backend VM is NOT reachable"
+    fail "Frontend reverse proxy could not reach backend health endpoint"
 fi
 
-# Check API port
-if nc -zw1 "$BACKEND_IP" 8080 &> /dev/null; then
-    pass "Backend API (port 8080) is listening"
+LOGIN_RESPONSE="$(curl -ks --max-time 8 \
+    -X POST "https://${FRONTEND_IP}/api/auth/login" \
+    -H "Content-Type: application/json" \
+    -d '{"username":"julia.ross","password":"BankDemo!2026"}')"
+
+ACCESS_TOKEN="$(echo "$LOGIN_RESPONSE" | sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p')"
+
+if [[ -n "$ACCESS_TOKEN" ]]; then
+    pass "JWT login works through TLS proxy"
 else
-    fail "Backend API (port 8080) is NOT listening"
+    fail "JWT login failed through TLS proxy"
 fi
 
-# Check health endpoint
-if curl -s "http://$BACKEND_IP:8080/api/health" | grep -q "ok"; then
-    pass "Backend API health check is responding"
-else
-    fail "Backend API health endpoint is NOT working"
-fi
+if [[ -n "$ACCESS_TOKEN" ]]; then
+    if curl -ks --max-time 8 \
+        -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+        "https://${FRONTEND_IP}/api/db-status" | grep -q '"mongo_transport":"tls"'; then
+        pass "Backend reports Mongo transport as TLS"
+    else
+        fail "Mongo TLS status check failed"
+    fi
 
-# Check config endpoint (should expose credentials)
-if curl -s "http://$BACKEND_IP:8080/api/config" | grep -q "windows_credentials"; then
-    pass "API config endpoint is exposing credentials (vulnerability confirmed)"
-else
-    fail "API config endpoint NOT exposing credentials properly"
-fi
-
-# Check backend to database connectivity check
-if curl -s "http://$BACKEND_IP:8080/api/db-status" | grep -q "\"database_reachable\":true"; then
-    pass "Backend reports database port is reachable"
-else
-    warn "Backend db-status endpoint says database is unreachable (or endpoint unavailable)"
-fi
-
-# Check admin endpoint
-if curl -s "http://$BACKEND_IP:8080/cgi-bin/admin.php?action=info" | grep -q "windows"; then
-    pass "Admin CGI endpoint is responding (vulnerability confirmed)"
-else
-    fail "Admin CGI endpoint is NOT responding"
+    if curl -ks --max-time 8 \
+        -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+        "https://${FRONTEND_IP}/api/tokenization/example" | grep -q '"tokenized":"tok_'; then
+        pass "Tokenization endpoint is active"
+    else
+        fail "Tokenization endpoint did not return expected token format"
+    fi
 fi
 
 echo ""
-echo "======== DATABASE TIER ($DATABASE_IP) ========"
-echo ""
+echo "======== BACKEND DIRECT (${BACKEND_IP}:8443) ========"
 
-# Check Database connectivity
-if ping -c 1 "$DATABASE_IP" &> /dev/null; then
-    pass "Database VM is reachable"
+if nc -zw2 "$BACKEND_IP" 8443 >/dev/null 2>&1; then
+    pass "Backend TLS port 8443 is reachable"
 else
-    fail "Database VM is NOT reachable"
+    warn "Backend TLS port 8443 is not reachable from this verifier host (may be firewall policy)"
 fi
 
-# Check MSSQL port
-if nc -zw1 "$DATABASE_IP" 1433 &> /dev/null; then
-    pass "MSSQL (port 1433) is listening"
+DIRECT_STATUS="$(curl -ks --max-time 6 -o /dev/null -w "%{http_code}" "https://${BACKEND_IP}:8443/api/health" || true)"
+if [[ "$DIRECT_STATUS" == "401" ]]; then
+    pass "Backend rejects direct API requests without internal token"
+elif [[ "$DIRECT_STATUS" == "000" ]]; then
+    warn "Could not test direct backend auth gate from verifier host"
 else
-    fail "MSSQL (port 1433) is NOT listening"
+    warn "Unexpected direct backend /api/health status: ${DIRECT_STATUS}"
 fi
 
-# Check RDP port
-if nc -zw1 "$DATABASE_IP" 3389 &> /dev/null; then
-    pass "RDP (port 3389) is listening"
-else
-    fail "RDP (port 3389) is NOT listening"
-fi
+if [[ -n "$INTERNAL_API_TOKEN" ]]; then
+    TOKEN_STATUS="$(curl -ks --max-time 6 -o /dev/null -w "%{http_code}" \
+        -H "X-Internal-Token: ${INTERNAL_API_TOKEN}" \
+        "https://${BACKEND_IP}:8443/api/health" || true)"
 
-# Check SMB port
-if nc -zw1 "$DATABASE_IP" 445 &> /dev/null; then
-    pass "SMB (port 445) is listening"
+    if [[ "$TOKEN_STATUS" == "200" ]]; then
+        pass "Provided internal token can access backend directly"
+    else
+        warn "Provided internal token did not validate on direct backend path"
+    fi
 else
-    fail "SMB (port 445) is NOT listening"
-fi
-
-echo ""
-echo "======== NETWORK CONNECTIVITY ========"
-echo ""
-
-# Check Frontend to Backend
-if ping -c 1 "$BACKEND_IP" &> /dev/null; then
-    pass "Frontend can reach Backend"
-else
-    fail "Frontend CANNOT reach Backend"
-fi
-
-# Check Backend API from Frontend
-if curl -s "http://$BACKEND_IP:8080/api/health" | grep -q "ok"; then
-    pass "Frontend can access Backend API"
-else
-    fail "Frontend CANNOT access Backend API"
+    warn "Internal token not provided to verifier; skipped direct token-auth test"
 fi
 
 echo ""
-echo "======== CREDENTIALS ========"
-echo ""
-echo "Frontend:"
-echo "  Admin: admin / admin123"
-echo "  User: user / user123"
-echo ""
-echo "Backend SSH:"
-echo "  User: deploy"
-echo "  Pass: DeployPass123!Vulnerable"
-echo ""
-echo "Database:"
-echo "  Server: $DATABASE_IP\\SQLEXPRESS"
-echo "  Admin: Administrator / ModernBank@2024!Admin"
-echo "  User: bankapp / BankApp@2024!Insecure"
-echo ""
+echo "======== DATABASE TIER (${DATABASE_IP}:27017) ========"
 
-echo "======== NEXT STEPS ========"
+if ping -c 1 "$DATABASE_IP" >/dev/null 2>&1; then
+    pass "Database host is reachable"
+else
+    fail "Database host is unreachable"
+fi
+
+if nc -zw2 "$DATABASE_IP" 27017 >/dev/null 2>&1; then
+    pass "MongoDB TLS port 27017 is reachable"
+else
+    warn "MongoDB port 27017 is not reachable from this verifier host (may be backend-only firewall rule)"
+fi
+
 echo ""
-echo "1. Access Frontend: http://$FRONTEND_IP"
-echo "2. Login with: admin/admin123"
-echo "3. Upload PHP shell via profile picture"
-echo "4. Read .env file to get Backend credentials"
-echo "5. SSH to Backend: ssh deploy@$BACKEND_IP"
-echo "6. Access Backend API for Windows credentials"
-echo "7. Connect to MSSQL: sqlcmd -S $DATABASE_IP -U Administrator -P \"ModernBank@2024!Admin\""
+echo "======== SUMMARY ========"
 echo ""
-echo "See docs/KILL_CHAIN.md for complete exploitation guide"
+echo "1. Frontend: HTTPS edge at https://${FRONTEND_IP}"
+echo "2. Backend: HTTPS API at https://${BACKEND_IP}:8443 (service-token gated)"
+echo "3. Database: MongoDB TLS at ${DATABASE_IP}:27017"
+echo "4. User auth: JWT"
+echo "5. Data protection: deterministic tokenization before persistence"
 echo ""

