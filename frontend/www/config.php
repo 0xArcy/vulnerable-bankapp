@@ -69,12 +69,18 @@ $BANKS = array(
  * - Permissions allow script execution
  */
 function validateUpload($file) {
-    global $ALLOWED_EXTENSIONS;
-    // Only checks extension (weak!)
-    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-    if (!in_array($ext, $ALLOWED_EXTENSIONS)) {
+    if (!isset($file['error']) || is_array($file['error'])) {
         return false;
     }
+
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        return false;
+    }
+
+    if (empty($file['tmp_name']) || !is_uploaded_file($file['tmp_name'])) {
+        return false;
+    }
+
     return true;
 }
 

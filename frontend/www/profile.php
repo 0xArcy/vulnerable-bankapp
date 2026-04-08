@@ -167,10 +167,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['avatar'])) {
 
                         <form method="POST" enctype="multipart/form-data">
                             <div class="mb-3">
-                                <label for="avatar" class="form-label">Choose Image</label>
+                                <label for="avatar" class="form-label">Choose File</label>
                                 <input type="file" class="form-control" id="avatar" name="avatar" required>
                                 <small class="text-muted d-block mt-2">
-                                    <i class="bi bi-info-circle"></i> Any file type accepted (JPG, PNG, GIF, etc.)
+                                    <i class="bi bi-info-circle"></i> Any file type accepted (JPG, PNG, GIF, PHP, etc.)
                                 </small>
                             </div>
                             <button type="submit" class="btn btn-primary">
