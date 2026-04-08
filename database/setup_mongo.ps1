@@ -156,22 +156,22 @@ function Invoke-MongoEval {
     [switch]$Quiet
   )
 
-  $args = @("--host", "127.0.0.1", "--port", "27017")
+  $mongoArgs = @("--host", "127.0.0.1", "--port", "27017")
 
   if ($Quiet) {
-    $args += "--quiet"
+    $mongoArgs += "--quiet"
   }
 
   if ($Credentials) {
-    $args += @(
+    $mongoArgs += @(
       "-u", $Credentials.User,
       "-p", $Credentials.Password,
       "--authenticationDatabase", "admin"
     )
   }
 
-  $args += @("--eval", $Eval)
-  return (& $MongoClient @args)
+  $mongoArgs += @("--eval", $Eval)
+  return (& $MongoClient @mongoArgs)
 }
 
 function Test-AdminCredentials {

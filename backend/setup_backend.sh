@@ -1,7 +1,8 @@
 #!/bin/bash
 ##############################################################################
 # Modern Bank - Secure Backend Setup (Ubuntu Server)
-# Usage: sudo ./setup_backend.sh <FRONTEND_IP> <DATABASE_IP> [INTERNAL_API_TOKEN]
+# Usage: sudo ./setup_backend.sh [FRONTEND_IP] [DATABASE_IP] [INTERNAL_API_TOKEN]
+# All arguments are optional; fixed lab IPs and the shared repo token are used by default.
 ##############################################################################
 
 set -euo pipefail
@@ -181,9 +182,13 @@ systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
 systemctl restart "$SERVICE_NAME"
 
+log "Waiting for backend to start..."
+sleep 4
+
 if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+    warn "Service not active yet. Checking logs..."
     journalctl -u "$SERVICE_NAME" -n 80 --no-pager >&2
-    error "Backend service failed to start."
+    error "Backend service failed to start. Check MongoDB connectivity to ${DATABASE_IP}:27017 and ensure setup_mongo.ps1 ran successfully on the database host."
 fi
 
 log "Applying firewall rules"
@@ -211,7 +216,8 @@ echo -e "MongoDB Host: ${BLUE}${DATABASE_IP}:27017${NC}"
 echo -e "MongoDB Transport: ${BLUE}$([[ "${MONGO_USE_TLS}" == "true" ]] && echo TLS || echo TCP with auth + firewall)${NC}"
 echo -e "Internal API Token: ${BLUE}${INTERNAL_API_TOKEN}${NC}"
 echo ""
-echo "Pass this same token to frontend/setup_frontend.sh as argument #2."
+echo "Frontend setup will use the same shared token automatically from deployment.defaults.env in the standard lab deployment."
+echo "Only pass a frontend token argument if you intentionally want to override the repo default."
 echo ""
 
 success "Backend tier is configured for encrypted service-to-service communication."

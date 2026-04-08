@@ -1,7 +1,8 @@
 #!/bin/bash
 ##############################################################################
 # Modern Bank - Secure Frontend Setup (Nginx "godproxy" TLS edge)
-# Usage: sudo ./setup_frontend.sh <BACKEND_IP> [INTERNAL_API_TOKEN]
+# Usage: sudo ./setup_frontend.sh [BACKEND_IP] [INTERNAL_API_TOKEN]
+# All arguments are optional; fixed lab IPs and the shared repo token are used by default.
 ##############################################################################
 
 set -euo pipefail
@@ -59,7 +60,7 @@ fi
 if [[ -z "$INTERNAL_API_TOKEN" ]]; then
     INTERNAL_API_TOKEN="$(openssl rand -hex 24)"
     warn "No INTERNAL_API_TOKEN provided and no repo default found. Generated one automatically."
-    warn "Use the same token value for backend/setup_backend.sh argument #3."
+    warn "Use the same token value for the backend only if you are intentionally overriding deployment.defaults.env."
 else
     log "Using shared internal token from script argument, environment, or deployment.defaults.env"
 fi

@@ -364,8 +364,8 @@ async function connectMongo() {
     const connectOptions = {
         maxPoolSize: parseNumber(process.env.MONGO_MAX_POOL_SIZE || '10', 10),
         serverSelectionTimeoutMS: parseNumber(
-            process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS || '8000',
-            8000
+            process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS || '15000',
+            15000
         ),
     };
 
