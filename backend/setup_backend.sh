@@ -17,6 +17,7 @@ DATABASE_IP="${2:-10.0.10.106}"
 INTERNAL_API_TOKEN="${3:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULTS_FILE="$(cd "$SCRIPT_DIR/.." && pwd)/deployment.defaults.env"
 API_DIR="/opt/modernbank-backend"
 SERVICE_NAME="modernbank-backend"
 LOG_FILE="/var/log/modern_bank_backend_setup.log"
@@ -46,9 +47,20 @@ success() {
 
 trap 'error "Setup failed at line $LINENO while running: $BASH_COMMAND"' ERR
 
+if [[ -f "$DEFAULTS_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$DEFAULTS_FILE"
+fi
+
+if [[ -z "$INTERNAL_API_TOKEN" ]]; then
+    INTERNAL_API_TOKEN="${DEFAULT_INTERNAL_API_TOKEN:-}"
+fi
+
 if [[ -z "$INTERNAL_API_TOKEN" ]]; then
     INTERNAL_API_TOKEN="$(openssl rand -hex 24)"
-    warn "No INTERNAL_API_TOKEN provided. Generated one automatically."
+    warn "No INTERNAL_API_TOKEN provided and no repo default found. Generated one automatically."
+else
+    log "Using shared internal token from script argument, environment, or deployment.defaults.env"
 fi
 
 MONGO_DB_NAME="${MONGO_DB_NAME:-modernbank}"

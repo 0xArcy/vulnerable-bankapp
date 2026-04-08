@@ -41,11 +41,13 @@ MongoDB 7 (auth enabled)
 
 Run each step on its target machine.
 
+The fixed lab IPs are already baked into the deployment scripts. In the standard environment, you can run the wrapper scripts with no IP arguments.
+
 ### 1) Database Tier (`10.0.10.106`)
 
 ```bash
 cd /path/to/vulnerable-bankapp/database
-sudo bash setup_mongodb_secure.sh 10.0.10.102
+powershell -ExecutionPolicy Bypass -File .\setup_mongo.ps1
 ```
 
 Default DB app credentials used by scripts:
@@ -54,30 +56,26 @@ Default DB app credentials used by scripts:
 - `DB_PASS=ModernBankMongo!2026`
 - `DB_NAME=modernbank`
 
-### 2) Choose Shared Internal API Token
+## 2. Shared Internal API Token
 
-Generate once and reuse on backend + frontend:
+This repo now includes a deployment-wide default token in `deployment.defaults.env`.
 
-```bash
-openssl rand -hex 24
-```
+For this instance, backend, frontend, and verification scripts will all use that same value automatically if you do not pass a token argument.
+
+You only need to pass a token manually if you want to override the repo default.
 
 ### 3) Backend Tier (`10.0.10.102`)
 
 ```bash
 cd /path/to/vulnerable-bankapp/backend
-SHARED_TOKEN="<paste_generated_token>"
-MONGO_APP_USER=modernbank_app \
-MONGO_APP_PASSWORD='ModernBankMongo!2026' \
-sudo bash setup_backend.sh 10.0.10.105 10.0.10.106 "$SHARED_TOKEN"
+sudo bash setup_node.sh
 ```
 
 ### 4) Frontend Tier (`10.0.10.105`)
 
 ```bash
 cd /path/to/vulnerable-bankapp/frontend
-SHARED_TOKEN="<same_token_as_backend>"
-sudo bash setup_frontend.sh 10.0.10.102 "$SHARED_TOKEN"
+sudo bash setup_nginx_proxy.sh
 ```
 
 ### 5) Verify
@@ -85,7 +83,7 @@ sudo bash setup_frontend.sh 10.0.10.102 "$SHARED_TOKEN"
 From an admin workstation:
 
 ```bash
-bash verify_deployment.sh 10.0.10.105 10.0.10.102 10.0.10.106 "<shared_token_optional>"
+bash verify_deployment.sh
 ```
 
 ## Runtime Endpoints

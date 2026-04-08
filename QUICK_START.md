@@ -6,11 +6,13 @@ This guide brings up the encrypted Modern Bank stack with the default node layou
 - Frontend: `10.0.10.105`
 - Database: `10.0.10.106`
 
+Those IPs are already embedded in the deployment scripts, so the standard path does not require passing IP arguments.
+
 ## 1. Database Node (`10.0.10.106`)
 
 ```bash
 cd /path/to/vulnerable-bankapp/database
-sudo bash setup_mongodb_secure.sh 10.0.10.102
+powershell -ExecutionPolicy Bypass -File .\setup_mongo.ps1
 ```
 
 This configures:
@@ -19,24 +21,17 @@ This configures:
 - `requireTLS` on port `27017`
 - firewall rule allowing backend node to reach MongoDB
 
-## 2. Shared Internal Token (generate once)
+## 2. Shared Internal Token
 
-Run on any admin host:
+This repo ships with a deployment-wide default token in `deployment.defaults.env`.
 
-```bash
-openssl rand -hex 24
-```
-
-Save this value as `SHARED_TOKEN` and use exactly the same token on backend and frontend setup commands.
+If you run the setup scripts without a token argument, backend, frontend, and verification will all use that same shared value automatically.
 
 ## 3. Backend Node (`10.0.10.102`)
 
 ```bash
 cd /path/to/vulnerable-bankapp/backend
-SHARED_TOKEN="<generated_token>"
-MONGO_APP_USER=modernbank_app \
-MONGO_APP_PASSWORD='ModernBankMongo!2026' \
-sudo bash setup_backend.sh 10.0.10.105 10.0.10.106 "$SHARED_TOKEN"
+sudo bash setup_node.sh
 ```
 
 This configures:
@@ -50,8 +45,7 @@ This configures:
 
 ```bash
 cd /path/to/vulnerable-bankapp/frontend
-SHARED_TOKEN="<same_generated_token>"
-sudo bash setup_frontend.sh 10.0.10.102 "$SHARED_TOKEN"
+sudo bash setup_nginx_proxy.sh
 ```
 
 This configures:
@@ -65,7 +59,7 @@ This configures:
 
 ```bash
 cd /path/to/vulnerable-bankapp
-bash verify_deployment.sh 10.0.10.105 10.0.10.102 10.0.10.106 "$SHARED_TOKEN"
+bash verify_deployment.sh
 ```
 
 ## 6. Login Test

@@ -5,7 +5,9 @@ param (
     [string]$BackendIP = "10.0.10.102",
     [string]$DbUser = "modernbank_app",
   [string]$DbPassword = "ModernBankMongo!2026",
-  [string]$DbName = "modernbank"
+  [string]$DbName = "modernbank",
+  [string]$AdminUser = "modernbank_admin",
+  [string]$AdminPassword = ""
 )
 
 Write-Host "Setting up modernbank database on Windows..."
@@ -65,9 +67,12 @@ $MongoBinPath = Join-Path $MongoPath "bin"
 $MongoCfgPath = Join-Path $MongoBinPath "mongod.cfg"
 $MongoLogPath = Join-Path $MongoPath "log"
 $MongoDataPath = Join-Path $MongoPath "data"
+$StateDir = Join-Path $env:ProgramData "ModernBank"
+$AdminCredPath = Join-Path $StateDir "mongo-admin.json"
 
 New-Item -ItemType Directory -Force -Path $MongoLogPath | Out-Null
 New-Item -ItemType Directory -Force -Path $MongoDataPath | Out-Null
+New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
 
 $MongoClient = Get-MongoShellPath
 
@@ -103,6 +108,104 @@ security:
 "@
 $ConfigCdata | Out-File -FilePath $MongoCfgPath -Encoding ASCII -Force
 
+function New-RandomSecret {
+  param(
+    [int]$Bytes = 24
+  )
+
+  $buffer = New-Object byte[] $Bytes
+  [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($buffer)
+  return ([BitConverter]::ToString($buffer)).Replace("-", "").ToLowerInvariant()
+}
+
+function Get-AdminCredentials {
+  if ([string]::IsNullOrWhiteSpace($AdminPassword) -and (Test-Path $AdminCredPath)) {
+    $saved = Get-Content $AdminCredPath -Raw | ConvertFrom-Json
+    return @{
+      User = [string]$saved.user
+      Password = [string]$saved.password
+    }
+  }
+
+  if ([string]::IsNullOrWhiteSpace($AdminPassword)) {
+    $script:AdminPassword = New-RandomSecret
+  }
+
+  return @{
+    User = $AdminUser
+    Password = $AdminPassword
+  }
+}
+
+function Save-AdminCredentials {
+  param(
+    [string]$User,
+    [string]$Password
+  )
+
+  @{
+    user = $User
+    password = $Password
+  } | ConvertTo-Json | Out-File -FilePath $AdminCredPath -Encoding ASCII -Force
+}
+
+function Invoke-MongoEval {
+  param(
+    [string]$Eval,
+    [hashtable]$Credentials,
+    [switch]$Quiet
+  )
+
+  $args = @("--host", "127.0.0.1", "--port", "27017")
+
+  if ($Quiet) {
+    $args += "--quiet"
+  }
+
+  if ($Credentials) {
+    $args += @(
+      "-u", $Credentials.User,
+      "-p", $Credentials.Password,
+      "--authenticationDatabase", "admin"
+    )
+  }
+
+  $args += @("--eval", $Eval)
+  return (& $MongoClient @args)
+}
+
+function Test-AdminCredentials {
+  param(
+    [hashtable]$Credentials
+  )
+
+  try {
+    $result = Invoke-MongoEval -Credentials $Credentials -Quiet -Eval "db.getSiblingDB('admin').runCommand({ connectionStatus: 1 }).ok"
+    return ($result | Out-String) -match "1"
+  } catch {
+    return $false
+  }
+}
+
+function Initialize-AdminUser {
+  param(
+    [hashtable]$Credentials
+  )
+
+  $bootstrapAdminEval = @"
+db = db.getSiblingDB('admin');
+existingAdmin = db.getUser('$($Credentials.User)');
+if (existingAdmin) {
+  db.updateUser('$($Credentials.User)', { pwd: '$($Credentials.Password)', roles: [ { role: 'root', db: 'admin' } ] });
+} else {
+  db.createUser({ user: '$($Credentials.User)', pwd: '$($Credentials.Password)', roles: [ { role: 'root', db: 'admin' } ] });
+}
+"@
+
+  Invoke-MongoEval -Eval $bootstrapAdminEval | Out-Null
+  Save-AdminCredentials -User $Credentials.User -Password $Credentials.Password
+}
+
 Write-Host "Restarting MongoDB service..."
 if (Get-Service -Name "MongoDB" -ErrorAction SilentlyContinue) {
     Restart-Service -Name "MongoDB" -Force
@@ -114,6 +217,18 @@ if (Get-Service -Name "MongoDB" -ErrorAction SilentlyContinue) {
 Write-Host "Creating app user... Please give it 10 seconds..."
 Start-Sleep -Seconds 10
 
+$AdminCredentials = Get-AdminCredentials
+
+if (-not (Test-AdminCredentials -Credentials $AdminCredentials)) {
+  Write-Host "Bootstrapping MongoDB admin account..."
+
+  try {
+    Initialize-AdminUser -Credentials $AdminCredentials
+  } catch {
+    throw "Unable to create or authenticate the MongoDB admin user. If this host has stale MongoDB users from an earlier install, clear the demo data or provide the existing admin credentials and rerun the script. Original error: $($_.Exception.Message)"
+  }
+}
+
 $MongoEval = @"
 db = db.getSiblingDB('admin');
 existingUser = db.getUser('$DbUser');
@@ -124,7 +239,7 @@ if (existingUser) {
 }
 "@
 
-& $MongoClient --host 127.0.0.1 --port 27017 --eval $MongoEval
+Invoke-MongoEval -Credentials $AdminCredentials -Eval $MongoEval | Out-Null
 
 Write-Host "Firewall: Allowing MongoDB port 27017 from Backend IP..."
 Get-NetFirewallRule -DisplayName "MongoDB from Backend" -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
@@ -133,4 +248,5 @@ New-NetFirewallRule -DisplayName "MongoDB from Backend" -Direction Inbound -Loca
 Write-Host "MongoDB Community Server configured on Windows 10 (10.0.10.106)."
 Write-Host "Database: $DbName"
 Write-Host "Application user: $DbUser"
+Write-Host "Bootstrap admin credential file: $AdminCredPath"
 Write-Host "Allowed backend IP: $BackendIP"

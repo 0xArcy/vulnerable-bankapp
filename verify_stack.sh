@@ -5,6 +5,17 @@ FRONTEND_IP="${1:-10.0.10.105}"
 BACKEND_IP="${2:-10.0.10.102}"
 DB_IP="${3:-10.0.10.106}"
 SERVICE_TOKEN="${4:-}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULTS_FILE="$SCRIPT_DIR/deployment.defaults.env"
+
+if [[ -f "$DEFAULTS_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$DEFAULTS_FILE"
+fi
+
+if [[ -z "$SERVICE_TOKEN" ]]; then
+    SERVICE_TOKEN="${DEFAULT_INTERNAL_API_TOKEN:-}"
+fi
 
 echo "Verifying Modern Bank stack for frontend ${FRONTEND_IP}, backend ${BACKEND_IP}, database ${DB_IP}..."
 

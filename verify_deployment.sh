@@ -7,6 +7,8 @@ FRONTEND_IP="${1:-10.0.10.105}"
 BACKEND_IP="${2:-10.0.10.102}"
 DATABASE_IP="${3:-10.0.10.106}"
 INTERNAL_API_TOKEN="${4:-}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULTS_FILE="$SCRIPT_DIR/deployment.defaults.env"
 
 check_mark="[OK]"
 cross_mark="[FAIL]"
@@ -27,6 +29,15 @@ fail() {
 warn() {
     echo -e "${YELLOW}!${NC} $1"
 }
+
+if [[ -f "$DEFAULTS_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$DEFAULTS_FILE"
+fi
+
+if [[ -z "$INTERNAL_API_TOKEN" ]]; then
+    INTERNAL_API_TOKEN="${DEFAULT_INTERNAL_API_TOKEN:-}"
+fi
 
 echo "=================================================="
 echo "Modern Bank Secure Stack - Deployment Verification"
@@ -129,7 +140,7 @@ if [[ -n "$INTERNAL_API_TOKEN" ]]; then
         warn "Provided internal token did not validate on direct backend path"
     fi
 else
-    warn "Internal token not provided to verifier; skipped direct token-auth test"
+    warn "Internal token not provided and no repo default found; skipped direct token-auth test"
 fi
 
 echo ""
